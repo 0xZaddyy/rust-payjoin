@@ -7,7 +7,7 @@ exclude = ["tests"]
 
 [features]
 _test-utils = ["payjoin-test-utils", "tokio", "bitcoind"]
-_danger-local-https = ["payjoin/_danger-local-https"]
+_manual_tls = ["payjoin/_manual_tls"]
 uniffi = ["uniffi/cli", "bitcoin-ffi/default"]
 
 [lib]
