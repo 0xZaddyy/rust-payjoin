@@ -65,12 +65,10 @@ fn http_agent(_cert: Option<Vec<u8>>) -> Result<reqwest::Client> {
             let mut root_cert_store = RootCertStore::empty();
             root_cert_store.add(CertificateDer::from(cert_der.as_slice()))?;
 
-            return Ok(
-                reqwest::ClientBuilder::new()
-                    .use_rustls_tls()
-                    .add_root_certificate(reqwest::tls::Certificate::from_der(cert_der.as_slice())?)
-                    .build()?
-            );
+            return Ok(reqwest::ClientBuilder::new()
+                .use_rustls_tls()
+                .add_root_certificate(reqwest::tls::Certificate::from_der(cert_der.as_slice())?)
+                .build()?);
         }
     }
     Ok(reqwest::Client::new())
