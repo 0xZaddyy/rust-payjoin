@@ -18,7 +18,7 @@ pub(crate) mod v1;
 #[cfg(feature = "v2")]
 pub(crate) mod v2;
 
-#[cfg(feature = "_manual-tls")]
+#[cfg(feature = "_danger-local-https")]
 pub const LOCAL_CERT_FILE: &str = "localhost.der";
 
 #[async_trait::async_trait]
@@ -55,25 +55,30 @@ pub trait App: Send + Sync {
     }
 }
 
-fn http_agent(_cert: Option<Vec<u8>>) -> Result<reqwest::Client> {
-    #[cfg(feature = "_manual-tls")]
-    {
-        if let Some(cert_der) = cert {
-            use rustls::pki_types::CertificateDer;
-            use rustls::RootCertStore;
+#[cfg(feature = "_danger-local-https")]
+fn http_agent() -> Result<reqwest::Client> { Ok(http_agent_builder()?.build()?) }
 
-            let mut root_cert_store = RootCertStore::empty();
-            root_cert_store.add(CertificateDer::from(cert_der.as_slice()))?;
+#[cfg(not(feature = "_danger-local-https"))]
+fn http_agent() -> Result<reqwest::Client> { Ok(reqwest::Client::new()) }
 
-            return Ok(reqwest::ClientBuilder::new()
-                .use_rustls_tls()
-                .add_root_certificate(reqwest::tls::Certificate::from_der(cert_der.as_slice())?)
-                .build()?);
-        }
-    }
+#[cfg(feature = "_danger-local-https")]
+fn http_agent_builder() -> Result<reqwest::ClientBuilder> {
+    use rustls::pki_types::CertificateDer;
+    use rustls::RootCertStore;
 
-    // If cert is None or _manual-tls is not enabled, use default client
-    Ok(reqwest::Client::new())
+    let cert_der = read_local_cert()?;
+    let mut root_cert_store = RootCertStore::empty();
+    root_cert_store.add(CertificateDer::from(cert_der.as_slice()))?;
+    Ok(reqwest::ClientBuilder::new()
+        .use_rustls_tls()
+        .add_root_certificate(reqwest::tls::Certificate::from_der(cert_der.as_slice())?))
+}
+
+#[cfg(feature = "_danger-local-https")]
+fn read_local_cert() -> Result<Vec<u8>> {
+    let mut local_cert_path = std::env::temp_dir();
+    local_cert_path.push(LOCAL_CERT_FILE);
+    Ok(std::fs::read(local_cert_path)?)
 }
 
 async fn handle_interrupt(tx: watch::Sender<()>) {

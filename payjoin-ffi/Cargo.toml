@@ -7,7 +7,7 @@ exclude = ["tests"]
 
 [features]
 _test-utils = ["payjoin-test-utils", "tokio", "bitcoind"]
-_manual-tls = ["payjoin/_manual-tls"]
+_danger-local-https = ["payjoin/_danger-local-https"]
 
 [lib]
 name = "payjoin_ffi"
