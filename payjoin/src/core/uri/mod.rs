@@ -370,9 +370,8 @@ mod tests {
         let uri = "bitcoin:12c6DSiU4Rq3P4ZxziKxzrL5LmMBrzjrJX?pj=https://example.com&pjos=0";
         let parsed = Uri::try_from(uri).unwrap();
         match parsed.extras {
-            MaybePayjoinExtras::Supported(extras) => {
-                assert_eq!(extras.output_substitution, OutputSubstitution::Disabled)
-            }
+            MaybePayjoinExtras::Supported(extras) =>
+                assert_eq!(extras.output_substitution, OutputSubstitution::Disabled),
             _ => panic!("Expected Supported PayjoinExtras"),
         }
 
@@ -380,9 +379,8 @@ mod tests {
         let uri = "bitcoin:12c6DSiU4Rq3P4ZxziKxzrL5LmMBrzjrJX?pj=https://example.com&pjos=1";
         let parsed = Uri::try_from(uri).unwrap();
         match parsed.extras {
-            MaybePayjoinExtras::Supported(extras) => {
-                assert_eq!(extras.output_substitution, OutputSubstitution::Enabled)
-            }
+            MaybePayjoinExtras::Supported(extras) =>
+                assert_eq!(extras.output_substitution, OutputSubstitution::Enabled),
             _ => panic!("Expected Supported PayjoinExtras"),
         }
 
@@ -390,9 +388,8 @@ mod tests {
         let uri = "bitcoin:12c6DSiU4Rq3P4ZxziKxzrL5LmMBrzjrJX?pj=https://example.com";
         let parsed = Uri::try_from(uri).unwrap();
         match parsed.extras {
-            MaybePayjoinExtras::Supported(extras) => {
-                assert_eq!(extras.output_substitution, OutputSubstitution::Enabled)
-            }
+            MaybePayjoinExtras::Supported(extras) =>
+                assert_eq!(extras.output_substitution, OutputSubstitution::Enabled),
             _ => panic!("Expected Supported PayjoinExtras"),
         }
     }
