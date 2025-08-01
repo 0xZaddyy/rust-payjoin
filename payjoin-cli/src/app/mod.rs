@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Ok, Result};
 use bitcoincore_rpc::bitcoin::Amount;
+use clap::builder;
 use payjoin::bitcoin::psbt::Psbt;
 use payjoin::bitcoin::FeeRate;
 use payjoin::{bitcoin, PjUri};
@@ -76,6 +77,15 @@ fn http_agent_builder(
     Ok(builder)
 }
 
+#[cfg(feature = "_manual-tls")]
+pub fn create_http_client_with_server_cert(server_cert: Vec<u8>) -> Result<reqwest::Client> {
+    http_agent(Some(server_cert))
+}
+
+// #[cfg(not(feature = "manual-tls"))]
+// pub fn create_http_client_with_server_cert(_server_cert: Vec<u8>) -> Result<reqwest::Client> {
+//     http_agent()
+// }
 async fn handle_interrupt(tx: watch::Sender<()>) {
     if let Err(e) = signal::ctrl_c().await {
         eprintln!("Error setting up Ctrl-C handler: {e}");
