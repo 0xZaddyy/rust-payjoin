@@ -165,7 +165,7 @@ impl App {
         let app = self.clone();
 
         #[cfg(feature = "_manual-tls")]
-        let tls_acceptor = Self::init_tls_acceptor()?;
+        let tls_acceptor = self.init_tls_acceptor()?;
         while let Ok((stream, _)) = listener.accept().await {
             let app = app.clone();
             #[cfg(feature = "_manual-tls")]
