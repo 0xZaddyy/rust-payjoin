@@ -229,11 +229,11 @@ impl App {
         self,
         req: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
-        log::debug!("Received request: {req:?}");
+        log::trace!("Received {} request to {}", req.method(), req.uri().path());
         let mut response = match (req.method(), req.uri().path()) {
             (&Method::GET, "/bip21") => {
                 let query_string = req.uri().query().unwrap_or("");
-                log::debug!("{:?}, {query_string:?}", req.method());
+                log::trace!("Processing GET /bip21 with query length: {}", query_string.len());
                 let query_params: HashMap<_, _> =
                     url::form_urlencoded::parse(query_string.as_bytes()).into_owned().collect();
                 let amount = query_params.get("amount").map(|amt| {

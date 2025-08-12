@@ -211,10 +211,12 @@ impl MaybeInputsSeen {
         self.psbt.input_pairs().try_for_each(|input| {
             match is_known(&input.txin.previous_output) {
                 Ok(false) => Ok::<(), ReplyableError>(()),
-                Ok(true) =>  {
-                    log::warn!("Request contains an input we've seen before: {}. Preventing possible probing attack.", input.txin.previous_output);
+                Ok(true) => {
+                    log::warn!(
+                        "Request contains a duplicate input. Preventing possible probing attack."
+                    );
                     Err(InternalPayloadError::InputSeen(input.txin.previous_output))?
-                },
+                }
                 Err(e) => Err(ReplyableError::Implementation(e))?,
             }
         })?;
@@ -770,7 +772,11 @@ pub struct ProvisionalProposal {
 impl ProvisionalProposal {
     /// Prepare the PSBT by creating a new PSBT and copying only the fields allowed by the [spec](https://github.com/bitcoin/bips/blob/master/bip-0078.mediawiki#senders-payjoin-proposal-checklist)
     fn prepare_psbt(self, processed_psbt: Psbt) -> PayjoinProposal {
-        log::trace!("Original PSBT from callback: {processed_psbt:#?}");
+        log::trace!(
+            "Processing PSBT from callback with {} inputs and {} outputs",
+            processed_psbt.inputs.len(),
+            processed_psbt.unsigned_tx.output.len()
+        );
 
         // Create a new PSBT and copy only the allowed fields
         let mut filtered_psbt = Psbt {
@@ -801,7 +807,11 @@ impl ProvisionalProposal {
             filtered_psbt.outputs.push(bitcoin::psbt::Output::default());
         }
 
-        log::trace!("Filtered PSBT: {filtered_psbt:#?}");
+        log::trace!(
+            "Created filtered PSBT with {} inputs and {} outputs",
+            filtered_psbt.inputs.len(),
+            filtered_psbt.outputs.len()
+        );
 
         PayjoinProposal { payjoin_psbt: filtered_psbt }
     }
