@@ -290,19 +290,29 @@ impl WantsInputs {
             .map(|input| input.sequence)
             .unwrap_or_default();
 
-        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        // Deduplicate inputs based on previous_output (OutPoint)
+        let mut seen_outpoints = std::collections::HashSet::new();
+        let mut unique_inputs = Vec::new();
+        
+        for input_pair in inputs {
+            let outpoint = input_pair.txin.previous_output;
+            if !seen_outpoints.contains(&outpoint) {
+                seen_outpoints.insert(outpoint);
+                unique_inputs.push(input_pair);
+            }
+        }
 
         // Insert contributions at random indices for privacy
         let mut rng = rand::thread_rng();
         let mut receiver_input_amount = Amount::ZERO;
-        for input_pair in inputs.clone() {
+        for input_pair in &unique_inputs {
             receiver_input_amount += input_pair.previous_txout().value;
             let index = rng.gen_range(0..=self.payjoin_psbt.unsigned_tx.input.len());
-            payjoin_psbt.inputs.insert(index, input_pair.psbtin);
+            payjoin_psbt.inputs.insert(index, input_pair.psbtin.clone());
             payjoin_psbt
                 .unsigned_tx
                 .input
-                .insert(index, TxIn { sequence: original_sequence, ..input_pair.txin });
+                .insert(index, TxIn { sequence: original_sequence, ..input_pair.txin.clone() });
         }
 
         // Add the receiver change amount to the receiver change output, if applicable
@@ -315,7 +325,7 @@ impl WantsInputs {
         }
 
         let mut receiver_inputs = self.receiver_inputs;
-        receiver_inputs.extend(inputs);
+        receiver_inputs.extend(unique_inputs);
 
         Ok(WantsInputs {
             original_psbt: self.original_psbt,
@@ -653,14 +663,13 @@ mod tests {
         assert_eq!(wants_inputs.receiver_inputs.len(), 1);
         assert_eq!(wants_inputs.receiver_inputs[0], input_pair_1);
         // Contribute the same input again, and a new input.
-        // TODO: if we ever decide to fix contribute duplicate inputs, we need to update this test.
+        // Duplicates should now be filtered out
         let wants_inputs = wants_inputs
             .contribute_inputs(vec![input_pair_2.clone(), input_pair_1.clone()])
             .unwrap();
-        assert_eq!(wants_inputs.receiver_inputs.len(), 3);
+        assert_eq!(wants_inputs.receiver_inputs.len(), 2);
         assert_eq!(wants_inputs.receiver_inputs[0], input_pair_1);
         assert_eq!(wants_inputs.receiver_inputs[1], input_pair_2);
-        assert_eq!(wants_inputs.receiver_inputs[2], input_pair_1);
     }
 
     #[test]
