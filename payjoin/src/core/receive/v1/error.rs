@@ -30,6 +30,20 @@ impl From<InternalRequestError> for RequestError {
     fn from(value: InternalRequestError) -> Self { RequestError(value) }
 }
 
+impl RequestError {
+    /// Returns true if this is an HTTP protocol validation error that shouldn't
+    /// be treated as a PSBT rejection in V2 contexts
+    pub(crate) fn is_http_validation_error(&self) -> bool {
+        matches!(
+            self.0,
+            InternalRequestError::MissingHeader(_)
+                | InternalRequestError::InvalidContentType(_)
+                | InternalRequestError::InvalidContentLength(_)
+                | InternalRequestError::ContentLengthMismatch { .. }
+        )
+    }
+}
+
 impl From<InternalRequestError> for super::ProtocolError {
     fn from(e: InternalRequestError) -> Self { super::ProtocolError::V1(e.into()) }
 }

@@ -127,7 +127,17 @@ impl From<&ProtocolError> for JsonReply {
         match e {
             OriginalPayload(e) => e.into(),
             #[cfg(feature = "v1")]
-            V1(e) => JsonReply::new(OriginalPsbtRejected, e),
+            V1(e) => {
+                // In a V2 context processing V1 proposals, HTTP validation errors
+                // should be treated as internal issues rather than PSBT rejections
+                if e.is_http_validation_error() {
+                    // These are HTTP protocol issues, not PSBT validation failures
+                    JsonReply::new(Unavailable, "Protocol error processing V1 request in V2 context")
+                } else {
+                    // Other V1 errors can still be treated as PSBT rejections
+                    JsonReply::new(OriginalPsbtRejected, e)
+                }
+            },
             #[cfg(feature = "v2")]
             V2(_) => JsonReply::new(Unavailable, "Receiver error"),
         }
@@ -498,5 +508,58 @@ mod tests {
         let json = reply.to_json();
         assert_eq!(json["errorCode"], "original-psbt-rejected");
         assert_eq!(json["message"], "Missing payment.");
+    }
+
+    #[test]
+    #[cfg(feature = "v1")]
+    /// Test that V1 HTTP validation errors are properly mapped in V2 contexts
+    fn test_v1_http_errors_mapped_to_unavailable() {
+        use crate::receive::v1::{InternalRequestError, RequestError};
+
+        // Test MissingHeader error - should map to Unavailable
+        let v1_error = RequestError::from(InternalRequestError::MissingHeader("Content-Type"));
+        let protocol_error = ProtocolError::V1(v1_error);
+        let reply = JsonReply::from(&protocol_error);
+        
+        assert_eq!(reply.error_code, ErrorCode::Unavailable);
+        assert_eq!(reply.message, "Protocol error processing V1 request in V2 context");
+        assert_eq!(reply.status_code(), http::StatusCode::INTERNAL_SERVER_ERROR.as_u16());
+
+        // Test InvalidContentType error - should map to Unavailable
+        let v1_error = RequestError::from(InternalRequestError::InvalidContentType("application/json".to_string()));
+        let protocol_error = ProtocolError::V1(v1_error);
+        let reply = JsonReply::from(&protocol_error);
+        
+        assert_eq!(reply.error_code, ErrorCode::Unavailable);
+        assert_eq!(reply.message, "Protocol error processing V1 request in V2 context");
+
+        // Test ContentLengthMismatch error - should map to Unavailable
+        let v1_error = RequestError::from(InternalRequestError::ContentLengthMismatch { expected: 100, actual: 50 });
+        let protocol_error = ProtocolError::V1(v1_error);
+        let reply = JsonReply::from(&protocol_error);
+        
+        assert_eq!(reply.error_code, ErrorCode::Unavailable);
+        assert_eq!(reply.message, "Protocol error processing V1 request in V2 context");
+
+        // Test InvalidContentLength error - should map to Unavailable
+        let v1_error = RequestError::from(InternalRequestError::InvalidContentLength("invalid".parse::<usize>().unwrap_err()));
+        let protocol_error = ProtocolError::V1(v1_error);
+        let reply = JsonReply::from(&protocol_error);
+        
+        assert_eq!(reply.error_code, ErrorCode::Unavailable);
+        assert_eq!(reply.message, "Protocol error processing V1 request in V2 context");
+    }
+
+    #[test]
+    #[cfg(feature = "v1")]
+    /// Test that RequestError correctly identifies HTTP validation errors
+    fn test_request_error_is_http_validation_error() {
+        use crate::receive::v1::{InternalRequestError, RequestError};
+
+        // HTTP validation errors should return true
+        assert!(RequestError::from(InternalRequestError::MissingHeader("Content-Type")).is_http_validation_error());
+        assert!(RequestError::from(InternalRequestError::InvalidContentType("text/html".to_string())).is_http_validation_error());
+        assert!(RequestError::from(InternalRequestError::ContentLengthMismatch { expected: 100, actual: 50 }).is_http_validation_error());
+        assert!(RequestError::from(InternalRequestError::InvalidContentLength("abc".parse::<usize>().unwrap_err())).is_http_validation_error());
     }
 }
