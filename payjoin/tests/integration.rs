@@ -194,8 +194,10 @@ mod integration {
         use std::sync::Arc;
         use std::time::Duration;
 
-        use bitcoin::{Address, Transaction};
+        use bitcoin::{secp256k1, Address, Transaction};
+        use hpke::rand_core::OsRng;
         use http::StatusCode;
+        use payjoin::linked_mailbox::{CollaborativeMessageSet, DirectoryLinkedMailbox};
         use payjoin::persist::OptionalTransitionOutcome;
         use payjoin::receive::v2::{
             replay_event_log as replay_receiver_event_log, Monitor, PayjoinProposal,
@@ -219,6 +221,86 @@ mod integration {
         enum SenderFinalAction {
             SignAndBroadcastPayjoinProposal,
             BroadcastFallbackTransaction,
+        }
+
+        fn make_mailbox(
+            services: &TestServices,
+            ohttp_keys: &OhttpKeys,
+            shared_secret: [u8; 32],
+        ) -> DirectoryLinkedMailbox {
+            let gateway_url =
+                format!("{}/{}", services.ohttp_relay_url(), services.directory_url());
+            DirectoryLinkedMailbox::new(
+                (*services.http_agent()).clone(),
+                gateway_url,
+                services.directory_url(),
+                ohttp_keys.clone(),
+                shared_secret,
+            )
+        }
+
+        async fn do_linked_mailbox_test(services: &TestServices) -> Result<(), BoxSendSyncError> {
+            use futures::StreamExt;
+
+            services.wait_for_services_ready().await?;
+            let ohttp_keys = services.fetch_ohttp_keys().await?;
+            let shared_secret = secp256k1::SecretKey::new(&mut OsRng).secret_bytes();
+
+            // Each peer is independently initialized with only the shared secret.
+            let alice = make_mailbox(services, &ohttp_keys, shared_secret);
+            let bob = make_mailbox(services, &ohttp_keys, shared_secret);
+            let carol = make_mailbox(services, &ohttp_keys, shared_secret);
+
+            let alice_msg = b"Hello from Alice".to_vec();
+            let bob_msg = b"Hello from Bob".to_vec();
+            let carol_msg = b"Hello from Carol".to_vec();
+
+            let (ra, rb, rc) = tokio::join!(
+                alice.write(alice_msg.clone()),
+                bob.write(bob_msg.clone()),
+                carol.write(carol_msg.clone()),
+            );
+            ra?;
+            rb?;
+            rc?;
+
+            // Any peer (with the same secret) can iterate the full message
+            // set. Server-side ordering is opaque, so compare as a set.
+            let stream = alice.read();
+            tokio::pin!(stream);
+            let mut observed = Vec::new();
+            while let Some(item) = stream.next().await {
+                observed.push(item?);
+            }
+            assert_eq!(observed.len(), 3, "reader should see all three appended messages");
+
+            use std::collections::HashSet;
+            let expected: HashSet<Vec<u8>> = [alice_msg, bob_msg, carol_msg].into_iter().collect();
+            let observed_set: HashSet<Vec<u8>> = observed.into_iter().collect();
+            assert_eq!(observed_set, expected);
+
+            // A peer initialized with a different secret sees an empty message set.
+            let other_secret = secp256k1::SecretKey::new(&mut OsRng).secret_bytes();
+            let stranger = make_mailbox(services, &ohttp_keys, other_secret);
+            let stranger_stream = stranger.read();
+            tokio::pin!(stranger_stream);
+            assert!(stranger_stream.next().await.is_none(), "unrelated message set must be empty");
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_create_linked_mailbox() -> Result<(), BoxSendSyncError> {
+            init_tracing();
+            let mut services = TestServices::initialize().await?;
+            // Three peers each hold an independent CollaborativeMessageSet
+            // handle initialized only with the shared secret.
+            let result = tokio::select!(
+                err = services.take_ohttp_relay_handle() => panic!("Ohttp relay exited early: {:?}", err),
+                err = services.take_directory_handle() => panic!("Directory server exited early: {:?}", err),
+                res = do_linked_mailbox_test(&services) => res
+            );
+            result
         }
 
         #[tokio::test]
