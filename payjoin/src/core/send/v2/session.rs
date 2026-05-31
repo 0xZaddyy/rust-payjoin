@@ -153,6 +153,8 @@ pub enum SessionEvent {
     Created(Box<SessionContext>),
     /// Sender POSTed the Original PSBT and is waiting to receive a Proposal PSBT
     PostedOriginalPsbt(),
+    /// User initiated cancellation of the session
+    Cancelled(),
     /// Closed successful or failed session
     Closed(SessionOutcome),
 }
@@ -222,6 +224,7 @@ mod tests {
             SessionEvent::Closed(SessionOutcome::Success(PARSED_ORIGINAL_PSBT.clone())),
             SessionEvent::Closed(SessionOutcome::Failure),
             SessionEvent::Closed(SessionOutcome::Cancel),
+            SessionEvent::Cancelled(),
         ];
 
         for event in test_cases {
@@ -425,26 +428,26 @@ mod tests {
         persister
             .save_event(SessionEvent::PostedOriginalPsbt())
             .expect("in memory persister save should not fail");
-        assert!(!persister.inner.read().expect("session read should succeed").is_closed);
+        assert!(!persister.inner.lock().expect("session read should succeed").is_closed);
         let err = replay_event_log(&persister).expect_err("session replay should be fail");
         let expected_err: ReplayError<SendSession, SessionEvent> =
             InternalReplayError::InvalidEvent(Box::new(SessionEvent::PostedOriginalPsbt()), None)
                 .into();
         assert_eq!(err.to_string(), expected_err.to_string());
-        assert!(persister.inner.read().expect("lock should not be poisoned").is_closed);
+        assert!(persister.inner.lock().expect("lock should not be poisoned").is_closed);
 
         let persister = InMemoryAsyncPersister::<SessionEvent>::default();
         persister
             .save_event(SessionEvent::PostedOriginalPsbt())
             .await
             .expect("in memory async persister save should not fail");
-        assert!(!persister.inner.read().await.is_closed);
+        assert!(!persister.inner.lock().await.is_closed);
         let err =
             replay_event_log_async(&persister).await.expect_err("session replay should be fail");
         let expected_err: ReplayError<SendSession, SessionEvent> =
             InternalReplayError::InvalidEvent(Box::new(SessionEvent::PostedOriginalPsbt()), None)
                 .into();
         assert_eq!(err.to_string(), expected_err.to_string());
-        assert!(persister.inner.read().await.is_closed);
+        assert!(persister.inner.lock().await.is_closed);
     }
 }

@@ -8,58 +8,12 @@ import "package:convert/convert.dart";
 import "package:payjoin/http.dart" as payjoin_http;
 import "package:payjoin/payjoin.dart" as payjoin;
 import "package:payjoin/test_utils.dart" as test_utils;
+import "utils.dart";
 
 late test_utils.BitcoindEnv env;
 late test_utils.BitcoindInstance bitcoind;
 late test_utils.RpcClient receiver;
 late test_utils.RpcClient sender;
-
-class InMemoryReceiverPersister
-    implements payjoin.JsonReceiverSessionPersister {
-  final String id;
-  final List<String> events = [];
-  bool closed = false;
-
-  InMemoryReceiverPersister(this.id);
-
-  @override
-  void save(String event) {
-    events.add(event);
-  }
-
-  @override
-  List<String> load() {
-    return events;
-  }
-
-  @override
-  void close() {
-    closed = true;
-  }
-}
-
-class InMemorySenderPersister implements payjoin.JsonSenderSessionPersister {
-  final String id;
-  final List<String> events = [];
-  bool closed = false;
-
-  InMemorySenderPersister(this.id);
-
-  @override
-  void save(String event) {
-    events.add(event);
-  }
-
-  @override
-  List<String> load() {
-    return events;
-  }
-
-  @override
-  void close() {
-    closed = true;
-  }
-}
 
 class MempoolAcceptanceCallback implements payjoin.CanBroadcast {
   final payjoin.RpcClient connection;
@@ -493,7 +447,7 @@ void main() {
       services.waitForServicesReady();
       final directory = services.directoryUrl();
       final ohttpKeys = services.fetchOhttpKeys();
-      final recvPersister = InMemoryReceiverPersister("prim");
+      final recvPersister = InMemoryReceiverPersister();
       final pjUri = payjoin.ReceiverBuilder(
         address: receiverAddress,
         directory: directory,
@@ -535,8 +489,8 @@ void main() {
 
       // **********************
       // Inside the Receiver:
-      var recv_persister = InMemoryReceiverPersister("1");
-      var sender_persister = InMemorySenderPersister("1");
+      var recv_persister = InMemoryReceiverPersister();
+      var sender_persister = InMemorySenderPersister();
       var session = create_receiver_context(
         receiver_address,
         directory,

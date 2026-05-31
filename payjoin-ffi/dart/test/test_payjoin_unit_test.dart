@@ -2,101 +2,7 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:test/test.dart';
 import "package:payjoin/payjoin.dart" as payjoin;
-
-class InMemoryReceiverPersister
-    implements payjoin.JsonReceiverSessionPersister {
-  final String id;
-  final List<String> events = [];
-  bool closed = false;
-
-  InMemoryReceiverPersister(this.id);
-
-  @override
-  void save(String event) {
-    events.add(event);
-  }
-
-  @override
-  List<String> load() {
-    return events;
-  }
-
-  @override
-  void close() {
-    closed = true;
-  }
-}
-
-class InMemorySenderPersister implements payjoin.JsonSenderSessionPersister {
-  final String id;
-  final List<String> events = [];
-  bool closed = false;
-
-  InMemorySenderPersister(this.id);
-
-  @override
-  void save(String event) {
-    events.add(event);
-  }
-
-  @override
-  List<String> load() {
-    return events;
-  }
-
-  @override
-  void close() {
-    closed = true;
-  }
-}
-
-class InMemoryReceiverPersisterAsync
-    implements payjoin.JsonReceiverSessionPersisterAsync {
-  final String id;
-  final List<String> events = [];
-  bool closed = false;
-
-  InMemoryReceiverPersisterAsync(this.id);
-
-  @override
-  Future<void> save(String event) async {
-    events.add(event);
-  }
-
-  @override
-  Future<List<String>> load() async {
-    return events;
-  }
-
-  @override
-  Future<void> close() async {
-    closed = true;
-  }
-}
-
-class InMemorySenderPersisterAsync
-    implements payjoin.JsonSenderSessionPersisterAsync {
-  final String id;
-  final List<String> events = [];
-  bool closed = false;
-
-  InMemorySenderPersisterAsync(this.id);
-
-  @override
-  Future<void> save(String event) async {
-    events.add(event);
-  }
-
-  @override
-  Future<List<String>> load() async {
-    return events;
-  }
-
-  @override
-  Future<void> close() async {
-    closed = true;
-  }
-}
+import "utils.dart";
 
 void main() {
   group('Test URIs', () {
@@ -152,7 +58,7 @@ void main() {
 
   group("Test Persistence", () {
     test("Test receiver persistence", () {
-      var persister = InMemoryReceiverPersister("1");
+      var persister = InMemoryReceiverPersister();
       payjoin.ReceiverBuilder(
         address: "tb1q6d3a2w975yny0asuvd9a67ner4nks58ff0q8g4",
         directory: "https://example.com",
@@ -173,7 +79,7 @@ void main() {
     });
 
     test("Test sender persistence", () {
-      var receiver_persister = InMemoryReceiverPersister("1");
+      var receiver_persister = InMemoryReceiverPersister();
       var receiver = payjoin.ReceiverBuilder(
         address: "2MuyMrZHkbHbfjudmKUy45dU4P17pjG2szK",
         directory: "https://example.com",
@@ -187,7 +93,7 @@ void main() {
       ).build().save(persister: receiver_persister);
       var uri = receiver.pjUri();
 
-      var sender_persister = InMemorySenderPersister("1");
+      var sender_persister = InMemorySenderPersister();
       var psbt = payjoin.originalPsbt();
       payjoin.SenderBuilder(psbt: psbt, uri: uri)
           .buildRecommended(minFeeRateSatPerKwu: 1000)
@@ -205,7 +111,7 @@ void main() {
 
   group("Test Receiver Cancel", () {
     test("Test receiver cancel from initialized", () {
-      var persister = InMemoryReceiverPersister("1");
+      var persister = InMemoryReceiverPersister();
       var initialized = payjoin.ReceiverBuilder(
         address: "tb1q6d3a2w975yny0asuvd9a67ner4nks58ff0q8g4",
         directory: "https://example.com",
@@ -229,7 +135,7 @@ void main() {
     });
 
     test("Test receiver cancel async from initialized", () async {
-      var persister = InMemoryReceiverPersisterAsync("1");
+      var persister = InMemoryReceiverPersisterAsync();
       var initialized = await payjoin.ReceiverBuilder(
         address: "tb1q6d3a2w975yny0asuvd9a67ner4nks58ff0q8g4",
         directory: "https://example.com",
@@ -257,7 +163,7 @@ void main() {
 
   group("Test Sender Cancel", () {
     test("Test sender cancel from with reply key", () {
-      var receiver_persister = InMemoryReceiverPersister("1");
+      var receiver_persister = InMemoryReceiverPersister();
       var receiver = payjoin.ReceiverBuilder(
         address: "2MuyMrZHkbHbfjudmKUy45dU4P17pjG2szK",
         directory: "https://example.com",
@@ -271,25 +177,36 @@ void main() {
       ).build().save(persister: receiver_persister);
       var uri = receiver.pjUri();
 
-      var sender_persister = InMemorySenderPersister("1");
+      var sender_persister = InMemorySenderPersister();
       var psbt = payjoin.originalPsbt();
       var withReplyKey = payjoin.SenderBuilder(psbt: psbt, uri: uri)
           .buildRecommended(minFeeRateSatPerKwu: 1000)
           .save(persister: sender_persister);
       var cancelTransition = withReplyKey.cancel();
-      var fallbackTx = cancelTransition.save(persister: sender_persister);
-      expect(fallbackTx, isNotNull);
-      expect(fallbackTx.length, greaterThan(0));
-      final result = payjoin.replaySenderEventLog(persister: sender_persister);
+      var pendingFallback = cancelTransition.save(persister: sender_persister);
+      expect(pendingFallback, isNotNull);
+      expect(pendingFallback!.fallbackTx().length, greaterThan(0));
+      final cancelledResult = payjoin.replaySenderEventLog(
+        persister: sender_persister,
+      );
       expect(
-        result.state(),
+        cancelledResult.state(),
+        isA<payjoin.PendingFallbackSendSession>(),
+        reason: "sender should be in PendingFallback state after cancel",
+      );
+      pendingFallback.close().save(persister: sender_persister);
+      final closedResult = payjoin.replaySenderEventLog(
+        persister: sender_persister,
+      );
+      expect(
+        closedResult.state(),
         isA<payjoin.ClosedSendSession>(),
-        reason: "sender should be in Closed state after cancel",
+        reason: "sender should be in Closed state after close",
       );
     });
 
     test("Test sender cancel async from with reply key", () async {
-      var receiver_persister = InMemoryReceiverPersisterAsync("1");
+      var receiver_persister = InMemoryReceiverPersisterAsync();
       var receiver = await payjoin.ReceiverBuilder(
         address: "2MuyMrZHkbHbfjudmKUy45dU4P17pjG2szK",
         directory: "https://example.com",
@@ -303,31 +220,40 @@ void main() {
       ).build().saveAsync(persister: receiver_persister);
       var uri = receiver.pjUri();
 
-      var sender_persister = InMemorySenderPersisterAsync("1");
+      var sender_persister = InMemorySenderPersisterAsync();
       var psbt = payjoin.originalPsbt();
       var withReplyKey = await payjoin.SenderBuilder(psbt: psbt, uri: uri)
           .buildRecommended(minFeeRateSatPerKwu: 1000)
           .saveAsync(persister: sender_persister);
       var cancelTransition = withReplyKey.cancel();
-      var fallbackTx = await cancelTransition.saveAsync(
+      var pendingFallback = await cancelTransition.saveAsync(
         persister: sender_persister,
       );
-      expect(fallbackTx, isNotNull);
-      expect(fallbackTx.length, greaterThan(0));
-      final result = await payjoin.replaySenderEventLogAsync(
+      expect(pendingFallback, isNotNull);
+      expect(pendingFallback!.fallbackTx().length, greaterThan(0));
+      final cancelledResult = await payjoin.replaySenderEventLogAsync(
         persister: sender_persister,
       );
       expect(
-        result.state(),
+        cancelledResult.state(),
+        isA<payjoin.PendingFallbackSendSession>(),
+        reason: "sender should be in PendingFallback state after cancel",
+      );
+      await pendingFallback.close().saveAsync(persister: sender_persister);
+      final closedResult = await payjoin.replaySenderEventLogAsync(
+        persister: sender_persister,
+      );
+      expect(
+        closedResult.state(),
         isA<payjoin.ClosedSendSession>(),
-        reason: "sender should be in Closed state after cancel",
+        reason: "sender should be in Closed state after close",
       );
     });
   });
 
   group("Test Async Persistence", () {
     test("Test receiver async persistence", () async {
-      var persister = InMemoryReceiverPersisterAsync("1");
+      var persister = InMemoryReceiverPersisterAsync();
       await payjoin.ReceiverBuilder(
         address: "tb1q6d3a2w975yny0asuvd9a67ner4nks58ff0q8g4",
         directory: "https://example.com",
@@ -350,7 +276,7 @@ void main() {
     });
 
     test("Test sender async persistence", () async {
-      var receiver_persister = InMemoryReceiverPersisterAsync("1");
+      var receiver_persister = InMemoryReceiverPersisterAsync();
       var receiver = await payjoin.ReceiverBuilder(
         address: "2MuyMrZHkbHbfjudmKUy45dU4P17pjG2szK",
         directory: "https://example.com",
@@ -364,7 +290,7 @@ void main() {
       ).build().saveAsync(persister: receiver_persister);
       var uri = receiver.pjUri();
 
-      var sender_persister = InMemorySenderPersisterAsync("1");
+      var sender_persister = InMemorySenderPersisterAsync();
       var psbt = payjoin.originalPsbt();
       await payjoin.SenderBuilder(psbt: psbt, uri: uri)
           .buildRecommended(minFeeRateSatPerKwu: 1000)

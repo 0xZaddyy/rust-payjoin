@@ -4,14 +4,13 @@ use clap::{value_parser, Parser, Subcommand};
 use payjoin::bitcoin::amount::ParseAmountError;
 use payjoin::bitcoin::{Amount, FeeRate};
 use payjoin::Url;
-use serde::Deserialize;
 
-#[derive(Debug, Clone, Deserialize, Parser)]
+#[derive(Debug, Parser)]
 pub struct Flags {
-    #[arg(long = "bip77", help = "Use BIP77 (v2) protocol (default)", action = clap::ArgAction::SetTrue)]
-    pub bip77: Option<bool>,
-    #[arg(long = "bip78", help = "Use BIP78 (v1) protocol", action = clap::ArgAction::SetTrue)]
-    pub bip78: Option<bool>,
+    #[arg(long, help = "Use BIP77 (v2) protocol (default)")]
+    pub bip77: bool,
+    #[arg(long, help = "Use BIP78 (v1) protocol")]
+    pub bip78: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -134,11 +133,15 @@ pub enum Commands {
     /// Show payjoin session history
     History,
     #[cfg(feature = "v2")]
-    /// Broadcast the original transaction for a sender session (BIP77/v2 only)
-    Fallback {
-        /// The session ID to broadcast the fallback transaction for
+    /// Cancel a sender session, broadcasting the fallback transaction by default (BIP77/v2 only)
+    Cancel {
+        /// The session ID to cancel
         #[arg(required = true)]
         session_id: i64,
+
+        /// Cancel without broadcasting the fallback transaction
+        #[arg(long = "no-broadcast")]
+        no_broadcast: bool,
     },
 }
 

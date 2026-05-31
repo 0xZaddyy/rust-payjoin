@@ -285,9 +285,7 @@ impl ProvisionalProposal {
     /// Finalizes the Payjoin proposal into a PSBT which the sender will find acceptable before
     /// they sign the transaction and broadcast it to the network.
     ///
-    /// Finalization consists of two steps:
-    ///   1. Remove all sender signatures which were received with the original PSBT as these signatures are now invalid.
-    ///   2. Sign and finalize the resulting PSBT using the passed `wallet_process_psbt` signing function.
+    /// Finalization consists of signing and finalizing the PSBT using the passed `wallet_process_psbt` signing function.
     pub fn finalize_proposal(
         self,
         wallet_process_psbt: impl Fn(&Psbt) -> Result<Psbt, ImplementationError>,
@@ -304,7 +302,7 @@ impl ProvisionalProposal {
     /// In some applications the entity that progresses the typestate
     /// is different from the entity that has access to the private keys,
     /// so the PSBT to sign must be accessible to such implementers.
-    pub fn psbt_to_sign(&self) -> Psbt { self.psbt_context.payjoin_psbt.clone() }
+    pub fn psbt_to_sign(&self) -> Psbt { self.psbt_context.psbt_to_sign() }
 }
 
 /// A finalized Payjoin proposal, complete with fees and receiver signatures, that the sender

@@ -42,88 +42,6 @@ public class UriTests
     }
 }
 
-public class InMemoryReceiverPersister : JsonReceiverSessionPersister
-{
-    private List<string> _events = new();
-
-    public void Save(string @event)
-    {
-        _events.Add(@event);
-    }
-
-    public string[] Load()
-    {
-        return _events.ToArray();
-    }
-
-    public void Close()
-    {
-        // no-op for tests
-    }
-}
-
-public class InMemorySenderPersister : JsonSenderSessionPersister
-{
-    private List<string> _events = new();
-
-    public void Save(string @event)
-    {
-        _events.Add(@event);
-    }
-
-    public string[] Load()
-    {
-        return _events.ToArray();
-    }
-
-    public void Close()
-    {
-        // no-op for tests
-    }
-}
-
-public class InMemoryReceiverPersisterAsync : JsonReceiverSessionPersisterAsync
-{
-    private readonly List<string> _events = new();
-
-    public Task Save(string @event)
-    {
-        _events.Add(@event);
-        return Task.CompletedTask;
-    }
-
-    public Task<string[]> Load()
-    {
-        return Task.FromResult(_events.ToArray());
-    }
-
-    public Task Close()
-    {
-        return Task.CompletedTask;
-    }
-}
-
-public class InMemorySenderPersisterAsync : JsonSenderSessionPersisterAsync
-{
-    private readonly List<string> _events = new();
-
-    public Task Save(string @event)
-    {
-        _events.Add(@event);
-        return Task.CompletedTask;
-    }
-
-    public Task<string[]> Load()
-    {
-        return Task.FromResult(_events.ToArray());
-    }
-
-    public Task Close()
-    {
-        return Task.CompletedTask;
-    }
-}
-
 public class PersistenceTests
 {
     private static readonly byte[] OhttpKeysData = new byte[]
@@ -293,13 +211,16 @@ public class CancelTests
             .BuildRecommended(1000)
             .Save(senderPersister);
         var cancelTransition = withReplyKey.Cancel();
-        var fallbackTx = cancelTransition.Save(senderPersister);
-        Assert.NotNull(fallbackTx);
-        Assert.NotEmpty(fallbackTx);
+        var pendingFallback = cancelTransition.Save(senderPersister);
+        Assert.NotNull(pendingFallback);
+        Assert.NotEmpty(pendingFallback.FallbackTx());
 
-        var result = PayjoinMethods.ReplaySenderEventLog(senderPersister);
-        var state = result.State();
-        Assert.IsType<SendSession.Closed>(state);
+        var cancelledResult = PayjoinMethods.ReplaySenderEventLog(senderPersister);
+        Assert.IsType<SendSession.PendingFallback>(cancelledResult.State());
+
+        pendingFallback.Close().Save(senderPersister);
+        var closedResult = PayjoinMethods.ReplaySenderEventLog(senderPersister);
+        Assert.IsType<SendSession.Closed>(closedResult.State());
     }
 
     [Fact]
@@ -320,13 +241,16 @@ public class CancelTests
             .BuildRecommended(1000)
             .SaveAsync(senderPersister);
         var cancelTransition = withReplyKey.Cancel();
-        var fallbackTx = await cancelTransition.SaveAsync(senderPersister);
-        Assert.NotNull(fallbackTx);
-        Assert.NotEmpty(fallbackTx);
+        var pendingFallback = await cancelTransition.SaveAsync(senderPersister);
+        Assert.NotNull(pendingFallback);
+        Assert.NotEmpty(pendingFallback.FallbackTx());
 
-        var result = await PayjoinMethods.ReplaySenderEventLogAsync(senderPersister);
-        var state = result.State();
-        Assert.IsType<SendSession.Closed>(state);
+        var cancelledResult = await PayjoinMethods.ReplaySenderEventLogAsync(senderPersister);
+        Assert.IsType<SendSession.PendingFallback>(cancelledResult.State());
+
+        await pendingFallback.Close().SaveAsync(senderPersister);
+        var closedResult = await PayjoinMethods.ReplaySenderEventLogAsync(senderPersister);
+        Assert.IsType<SendSession.Closed>(closedResult.State());
     }
 }
 

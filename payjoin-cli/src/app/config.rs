@@ -69,12 +69,12 @@ impl Config {
         let mut selected_version = None;
 
         // Check for BIP77 (v2)
-        if cli.flags.bip77.unwrap_or(false) {
+        if cli.flags.bip77 {
             selected_version = Some(Version::Two);
         }
 
         // Check for BIP78 (v1)
-        if cli.flags.bip78.unwrap_or(false) {
+        if cli.flags.bip78 {
             if selected_version.is_some() {
                 return Err(ConfigError::Message(
                     "Multiple version flags specified. Please use only one of: --bip77, --bip78"
@@ -156,7 +156,7 @@ impl Config {
                 {
                     match built_config.get::<V1Config>("v1") {
                         Ok(v1) => {
-                            if v1.pj_endpoint.port().is_none() != (v1.port == 0) {
+                            if v1.port == 0 && v1.pj_endpoint.port().is_some() {
                                 return Err(ConfigError::Message(
                                     "If --port is 0, --pj-endpoint may not have a port".to_owned(),
                                 ));
@@ -337,7 +337,7 @@ fn handle_subcommands(config: Builder, cli: &Cli) -> Result<Builder, ConfigError
         #[cfg(feature = "v2")]
         Commands::History => Ok(config),
         #[cfg(feature = "v2")]
-        Commands::Fallback { .. } => Ok(config),
+        Commands::Cancel { .. } => Ok(config),
     }
 }
 
@@ -360,5 +360,52 @@ where
                 })
             })
             .map(Some),
+    }
+}
+
+#[cfg(all(test, feature = "v1"))]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+    use crate::cli::Cli;
+
+    fn cli(port: &str, endpoint: &str) -> Cli {
+        Cli::parse_from([
+            "payjoin-cli",
+            "--bip78",
+            "--port",
+            port,
+            "--pj-endpoint",
+            endpoint,
+            "receive",
+            "50000",
+        ])
+    }
+
+    #[test]
+    fn rejects_random_port_with_explicit_endpoint_port() {
+        let err = Config::new(&cli("0", "https://example.com:443/")).unwrap_err();
+        assert!(err.to_string().contains("port"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn accepts_random_port_with_implicit_endpoint_port() {
+        Config::new(&cli("0", "https://example.com/")).unwrap();
+    }
+
+    #[test]
+    fn accepts_explicit_port_with_implicit_endpoint_port() {
+        Config::new(&cli("3000", "https://example.com/")).unwrap();
+    }
+
+    #[test]
+    fn accepts_explicit_port_with_matching_explicit_endpoint_port() {
+        Config::new(&cli("3000", "https://example.com:3000/")).unwrap();
+    }
+
+    #[test]
+    fn accepts_explicit_port_with_different_explicit_endpoint_port() {
+        Config::new(&cli("3000", "https://example.com:443/")).unwrap();
     }
 }

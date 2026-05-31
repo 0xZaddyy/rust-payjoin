@@ -2,17 +2,24 @@
 
 Welcome to the Dart language bindings for the [Payjoin Dev Kit](https://payjoindevkit.org/)!
 
-## Running Tests
+## Usage
 
-Follow these steps to clone the repository and run the tests.
+### Install
 
 ```shell
-git clone https://github.com/payjoin/rust-payjoin.git
-cd rust-payjoin/payjoin-ffi/dart
-
-# Generate the bindings
-bash ./scripts/generate_bindings.sh
-
-# Run all tests
-dart test
+dart pub add payjoin
 ```
+
+### Import
+
+```dart
+import 'package:payjoin/payjoin.dart' as payjoin;
+```
+
+For OHTTP relay helpers:
+
+```dart
+import 'package:payjoin/http.dart' as payjoin_http;
+```
+
+Made with [uniffi-dart](https://github.com/Uniffi-Dart/uniffi-dart)

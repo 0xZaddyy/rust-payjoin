@@ -12,7 +12,6 @@ use payjoin::bitcoin::{
 };
 use payjoin::receive::InputPair;
 
-/// Implementation of PayjoinWallet for bitcoind using async RPC client
 #[derive(Clone)]
 pub struct BitcoindWallet {
     rpc: Arc<AsyncBitcoinRpc>,

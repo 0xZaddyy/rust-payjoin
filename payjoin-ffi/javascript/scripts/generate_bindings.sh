@@ -6,7 +6,7 @@ echo "Running on $OS"
 
 npm --version
 
-if [[ $OS == "Darwin" ]]; then
+if [[ $OS == "Darwin" && -z ${IN_NIX_SHELL:-} ]]; then
     # TODO: check if brew & llvm are installed
     LLVM_PREFIX=$(brew --prefix llvm)
     export AR="$LLVM_PREFIX/bin/llvm-ar"
@@ -19,7 +19,12 @@ cd node_modules/uniffi-bindgen-react-native
 cargo add home@=0.5.11 --package uniffi-bindgen-react-native
 cd ../..
 
-rustup target add wasm32-unknown-unknown
+# rustup target add is a no-op against a nix-provided toolchain
+# (no rustup home, targets baked into the nix derivation instead).
+if command -v rustup >/dev/null 2>&1 &&
+    rustup show active-toolchain >/dev/null 2>&1; then
+    rustup target add wasm32-unknown-unknown
+fi
 
 npm run build
 npm run build:test-utils

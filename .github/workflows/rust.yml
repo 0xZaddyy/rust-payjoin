@@ -45,30 +45,30 @@ jobs:
     steps:
       - name: "Checkout repo"
         uses: actions/checkout@v4
-      - name: "Install nightly toolchain"
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: clippy
       - name: "Use cache"
         uses: Swatinem/rust-cache@v2
+      - name: "Install nix"
+        uses: DeterminateSystems/determinate-nix-action@main
+      - name: "Use nix cache"
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: "Run linting check"
-        run: cd payjoin-ffi && bash contrib/lint.sh
+        run: cd payjoin-ffi && nix develop -c ./contrib/lint.sh
 
   Lint:
     runs-on: ubuntu-latest
     steps:
       - name: "Checkout repo"
         uses: actions/checkout@v4
-      - name: "Install nightly toolchain"
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: clippy
       - name: "Use cache"
         uses: Swatinem/rust-cache@v2
+      - name: "Install nix"
+        uses: DeterminateSystems/determinate-nix-action@main
+      - name: "Use nix cache"
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: "Run code linting"
-        run: bash contrib/lint.sh
+        run: nix develop -c ./contrib/lint.sh
       - name: "Run documentation linting"
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items
+        run: nix develop -c -- bash -c 'RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items'
 
   Coverage:
     name: Code coverage

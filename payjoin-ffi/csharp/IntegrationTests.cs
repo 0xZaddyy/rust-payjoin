@@ -11,25 +11,6 @@ namespace Payjoin.Tests
         private TestServices? _services;
         private HttpClient? _httpClient;
 
-        private sealed class InMemoryReceiverPersister : JsonReceiverSessionPersister
-        {
-            private readonly List<string> _events = new();
-            public RpcClient? Connection { get; set; }
-
-            public void Save(string @event) => _events.Add(@event);
-            public string[] Load() => _events.ToArray();
-            public void Close() { }
-        }
-
-        private sealed class InMemorySenderPersister : JsonSenderSessionPersister
-        {
-            private readonly List<string> _events = new();
-
-            public void Save(string @event) => _events.Add(@event);
-            public string[] Load() => _events.ToArray();
-            public void Close() { }
-        }
-
         private sealed class MempoolAcceptanceCallback : CanBroadcast
         {
             private readonly RpcClient _connection;
@@ -477,7 +458,7 @@ namespace Payjoin.Tests
 
             var ohttpKeys = _services.FetchOhttpKeys();
 
-            var recvPersister = new InMemoryReceiverPersister { Connection = receiver };
+            var recvPersister = new InMemoryReceiverPersister();
             var senderPersister = new InMemorySenderPersister();
 
             using var receiverBuilder = new ReceiverBuilder(receiverAddress, directory, ohttpKeys);

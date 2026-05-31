@@ -5,8 +5,8 @@
 `payjoin-cli` is the reference implementation for the payjoin protocol, written using the [Payjoin Dev Kit](https://payjoindevkit.org).
 
 It enables sending and receiving [BIP 78 Payjoin
-(v1)](https://github.com/bitcoin/bips/blob/master/bip-0078.mediawiki) and [Draft
-BIP 77 Async Payjoin (v2)](https://github.com/bitcoin/bips/blob/master/bip-0077.md)
+(v1)](https://github.com/bitcoin/bips/blob/master/bip-0078.mediawiki) and
+[BIP 77 Async Payjoin (v2)](https://github.com/bitcoin/bips/blob/master/bip-0077.md)
 transactions via `bitcoind`. By default it supports Payjoin v2, which is
 backwards compatible with v1. Enable the `v1` feature to disable Payjoin v2 to
 send and receive using only v1.
@@ -76,7 +76,7 @@ rpchost = "http://localhost:18443/wallet/sender"
 # For v2, our config also requires a payjoin directory server and OHTTP relay
 [v2]
 pj_directory = "https://payjo.in"
-ohttp_relays = ["https://pj.benalleng.com", "https://pj.bobspacebkk.com", "https://ohttp.achow101.com"]
+ohttp_relays = ["https://pj.benalleng.com", "https://pj.bobspacebkk.com", "https://payjoin.achow101.com"]
 ```
 
 #### `receiver/config.toml`
@@ -91,7 +91,7 @@ rpchost = "http://localhost:18443/wallet/receiver"
 # For v2, our config also requires a payjoin directory server and OHTTP relay
 [v2]
 pj_directory = "https://payjo.in"
-ohttp_relays = ["https://pj.benalleng.com", "https://pj.bobspacebkk.com", "https://ohttp.achow101.com"]
+ohttp_relays = ["https://pj.benalleng.com", "https://pj.bobspacebkk.com", "https://payjoin.achow101.com"]
 ```
 
 Now, the receiver must generate an address to receive the payment. The format is:

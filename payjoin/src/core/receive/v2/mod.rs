@@ -721,30 +721,25 @@ impl Receiver<MaybeInputsOwned> {
         Receiver<HasReplyableError>,
     > {
         match self.state.original.check_inputs_not_owned(is_owned) {
-            Ok(inner) => inner,
+            Ok(()) => MaybeFatalTransition::success(
+                SessionEvent::CheckedInputsNotOwned(),
+                Receiver {
+                    state: MaybeInputsSeen { original: self.original.clone() },
+                    session_context: self.session_context,
+                },
+            ),
             Err(e) => match e {
-                Error::Implementation(_) => {
-                    return MaybeFatalTransition::transient(e);
-                }
-                _ => {
-                    return MaybeFatalTransition::replyable_error(
-                        SessionEvent::GotReplyableError((&e).into()),
-                        Receiver {
-                            state: HasReplyableError { error_reply: (&e).into() },
-                            session_context: self.session_context,
-                        },
-                        e,
-                    );
-                }
+                Error::Implementation(_) => MaybeFatalTransition::transient(e),
+                _ => MaybeFatalTransition::replyable_error(
+                    SessionEvent::GotReplyableError((&e).into()),
+                    Receiver {
+                        state: HasReplyableError { error_reply: (&e).into() },
+                        session_context: self.session_context,
+                    },
+                    e,
+                ),
             },
-        };
-        MaybeFatalTransition::success(
-            SessionEvent::CheckedInputsNotOwned(),
-            Receiver {
-                state: MaybeInputsSeen { original: self.original.clone() },
-                session_context: self.session_context,
-            },
-        )
+        }
     }
 
     pub(crate) fn apply_checked_inputs_not_owned(self) -> ReceiveSession {
@@ -783,30 +778,25 @@ impl Receiver<MaybeInputsSeen> {
         Receiver<HasReplyableError>,
     > {
         match self.state.original.check_no_inputs_seen_before(is_known) {
-            Ok(inner) => inner,
+            Ok(()) => MaybeFatalTransition::success(
+                SessionEvent::CheckedNoInputsSeenBefore(),
+                Receiver {
+                    state: OutputsUnknown { original: self.original.clone() },
+                    session_context: self.session_context,
+                },
+            ),
             Err(e) => match e {
-                Error::Implementation(_) => {
-                    return MaybeFatalTransition::transient(e);
-                }
-                _ => {
-                    return MaybeFatalTransition::replyable_error(
-                        SessionEvent::GotReplyableError((&e).into()),
-                        Receiver {
-                            state: HasReplyableError { error_reply: (&e).into() },
-                            session_context: self.session_context,
-                        },
-                        e,
-                    );
-                }
+                Error::Implementation(_) => MaybeFatalTransition::transient(e),
+                _ => MaybeFatalTransition::replyable_error(
+                    SessionEvent::GotReplyableError((&e).into()),
+                    Receiver {
+                        state: HasReplyableError { error_reply: (&e).into() },
+                        session_context: self.session_context,
+                    },
+                    e,
+                ),
             },
-        };
-        MaybeFatalTransition::success(
-            SessionEvent::CheckedNoInputsSeenBefore(),
-            Receiver {
-                state: OutputsUnknown { original: self.original.clone() },
-                session_context: self.session_context,
-            },
-        )
+        }
     }
 
     pub(crate) fn apply_checked_no_inputs_seen_before(self) -> ReceiveSession {
@@ -849,28 +839,23 @@ impl Receiver<OutputsUnknown> {
         Error,
         Receiver<HasReplyableError>,
     > {
-        let inner = match self.state.original.identify_receiver_outputs(is_receiver_output) {
-            Ok(inner) => inner,
+        match self.state.original.identify_receiver_outputs(is_receiver_output) {
+            Ok(inner) => MaybeFatalTransition::success(
+                SessionEvent::IdentifiedReceiverOutputs(inner.owned_vouts.clone()),
+                Receiver { state: WantsOutputs { inner }, session_context: self.session_context },
+            ),
             Err(e) => match e {
-                Error::Implementation(_) => {
-                    return MaybeFatalTransition::transient(e);
-                }
-                _ => {
-                    return MaybeFatalTransition::replyable_error(
-                        SessionEvent::GotReplyableError((&e).into()),
-                        Receiver {
-                            state: HasReplyableError { error_reply: (&e).into() },
-                            session_context: self.session_context,
-                        },
-                        e,
-                    );
-                }
+                Error::Implementation(_) => MaybeFatalTransition::transient(e),
+                _ => MaybeFatalTransition::replyable_error(
+                    SessionEvent::GotReplyableError((&e).into()),
+                    Receiver {
+                        state: HasReplyableError { error_reply: (&e).into() },
+                        session_context: self.session_context,
+                    },
+                    e,
+                ),
             },
-        };
-        MaybeFatalTransition::success(
-            SessionEvent::IdentifiedReceiverOutputs(inner.owned_vouts.clone()),
-            Receiver { state: WantsOutputs { inner }, session_context: self.session_context },
-        )
+        }
     }
 
     pub(crate) fn apply_identified_receiver_outputs(
@@ -1054,23 +1039,20 @@ impl Receiver<WantsFeeRange> {
     ) -> MaybeFatalTransition<SessionEvent, Receiver<ProvisionalProposal>, ProtocolError> {
         let max_effective_fee_rate =
             max_effective_fee_rate.or(Some(self.session_context.max_fee_rate));
-        let psbt_context = match self
+        match self
             .state
             .inner
             .calculate_psbt_context_with_fee_range(min_fee_rate, max_effective_fee_rate)
         {
-            Ok(inner) => inner,
-            Err(e) => {
-                return MaybeFatalTransition::transient(ProtocolError::OriginalPayload(e.into()));
-            }
-        };
-        MaybeFatalTransition::success(
-            SessionEvent::AppliedFeeRange(psbt_context.clone()),
-            Receiver {
-                state: ProvisionalProposal { psbt_context },
-                session_context: self.session_context,
-            },
-        )
+            Ok(psbt_context) => MaybeFatalTransition::success(
+                SessionEvent::AppliedFeeRange(psbt_context.clone()),
+                Receiver {
+                    state: ProvisionalProposal { psbt_context },
+                    session_context: self.session_context,
+                },
+            ),
+            Err(e) => MaybeFatalTransition::transient(ProtocolError::OriginalPayload(e.into())),
+        }
     }
 
     pub(crate) fn apply_applied_fee_range(self, psbt_context: PsbtContext) -> ReceiveSession {
@@ -1096,25 +1078,23 @@ impl Receiver<ProvisionalProposal> {
     /// Finalizes the Payjoin proposal into a PSBT which the sender will find acceptable before
     /// they re-sign the transaction and broadcast it to the network.
     ///
-    /// Finalization consists of two steps:
-    ///   1. Remove all sender signatures which were received with the original PSBT as these signatures are now invalid.
-    ///   2. Sign and finalize the resulting PSBT using the passed `wallet_process_psbt` signing function.
+    /// Finalization consists of signing and finalizing the PSBT using the passed `wallet_process_psbt` signing function.
     pub fn finalize_proposal(
         self,
         wallet_process_psbt: impl Fn(&Psbt) -> Result<Psbt, ImplementationError>,
     ) -> MaybeTransientTransition<SessionEvent, Receiver<PayjoinProposal>, ImplementationError>
     {
         let original_psbt = self.state.psbt_context.original_psbt.clone();
-        let inner = match self.state.psbt_context.finalize_proposal(wallet_process_psbt) {
-            Ok(inner) => inner,
+        let payjoin_psbt = match self.state.psbt_context.finalize_proposal(wallet_process_psbt) {
+            Ok(payjoin_psbt) => payjoin_psbt,
             Err(e) => {
                 return MaybeTransientTransition::transient(e);
             }
         };
-        let psbt_context = PsbtContext { payjoin_psbt: inner.clone(), original_psbt };
+        let psbt_context = PsbtContext { payjoin_psbt: payjoin_psbt.clone(), original_psbt };
         let payjoin_proposal = PayjoinProposal { psbt_context: psbt_context.clone() };
         MaybeTransientTransition::success(
-            SessionEvent::FinalizedProposal(inner),
+            SessionEvent::FinalizedProposal(payjoin_psbt),
             Receiver { state: payjoin_proposal, session_context: self.session_context },
         )
     }
@@ -1124,7 +1104,7 @@ impl Receiver<ProvisionalProposal> {
     /// In some applications the entity that progresses the typestate
     /// is different from the entity that has access to the private keys,
     /// so the PSBT to sign must be accessible to such implementers.
-    pub fn psbt_to_sign(&self) -> Psbt { self.state.psbt_context.payjoin_psbt.clone() }
+    pub fn psbt_to_sign(&self) -> Psbt { self.state.psbt_context.psbt_to_sign() }
 
     pub(crate) fn apply_payjoin_proposal(self, payjoin_psbt: Psbt) -> ReceiveSession {
         let psbt_context = PsbtContext {
@@ -1176,8 +1156,7 @@ impl Receiver<PayjoinProposal> {
         } else {
             // Prepare v2 wrapped and backwards-compatible v1 payload
             body = self.psbt().to_string().as_bytes().to_vec();
-            let receiver_mailbox =
-                short_id_from_pubkey(self.session_context.receiver_key.public_key());
+            let receiver_mailbox = self.session_context.proposal_mailbox_id();
             target_resource = mailbox_endpoint(&self.session_context.directory, &receiver_mailbox);
             method = "PUT";
         }
@@ -1513,8 +1492,8 @@ pub mod test {
             .save(&persister)
             .expect("InMemoryPersister shouldn't fail");
         assert!(matches!(res, OptionalTransitionOutcome::Stasis(_)));
-        assert!(!persister.inner.read().expect("Shouldn't be poisoned").is_closed);
-        assert_eq!(persister.inner.read().expect("Shouldn't be poisoned").events.len(), 0);
+        assert!(!persister.inner.lock().expect("Shouldn't be poisoned").is_closed);
+        assert_eq!(persister.inner.lock().expect("Shouldn't be poisoned").events.len(), 0);
 
         // Payjoin was broadcasted, should progress to success
         let persister = InMemoryPersister::default();
@@ -1524,10 +1503,10 @@ pub mod test {
             .expect("InMemoryPersister shouldn't fail");
 
         assert!(matches!(res, OptionalTransitionOutcome::Progress(_)));
-        assert!(persister.inner.read().expect("Shouldn't be poisoned").is_closed);
-        assert_eq!(persister.inner.read().expect("Shouldn't be poisoned").events.len(), 1);
+        assert!(persister.inner.lock().expect("Shouldn't be poisoned").is_closed);
+        assert_eq!(persister.inner.lock().expect("Shouldn't be poisoned").events.len(), 1);
         assert_eq!(
-            persister.inner.read().expect("Shouldn't be poisoned").events.last(),
+            persister.inner.lock().expect("Shouldn't be poisoned").events.last(),
             Some(&SessionEvent::Closed(SessionOutcome::Success(vec![(
                 ScriptBuf::default(),
                 Witness::default()
@@ -1549,10 +1528,10 @@ pub mod test {
             .expect("InMemoryPersister shouldn't fail");
 
         assert!(matches!(res, OptionalTransitionOutcome::Progress(_)));
-        assert!(persister.inner.read().expect("Shouldn't be poisoned").is_closed);
-        assert_eq!(persister.inner.read().expect("Shouldn't be poisoned").events.len(), 1);
+        assert!(persister.inner.lock().expect("Shouldn't be poisoned").is_closed);
+        assert_eq!(persister.inner.lock().expect("Shouldn't be poisoned").events.len(), 1);
         assert_eq!(
-            persister.inner.read().expect("Shouldn't be poisoned").events.last(),
+            persister.inner.lock().expect("Shouldn't be poisoned").events.last(),
             Some(&SessionEvent::Closed(SessionOutcome::FallbackBroadcasted))
         );
 
@@ -1579,10 +1558,10 @@ pub mod test {
             .expect("InMemoryPersister shouldn't fail");
 
         assert!(matches!(res, OptionalTransitionOutcome::Progress(_)));
-        assert!(persister.inner.read().expect("Shouldn't be poisoned").is_closed);
-        assert_eq!(persister.inner.read().expect("Shouldn't be poisoned").events.len(), 1);
+        assert!(persister.inner.lock().expect("Shouldn't be poisoned").is_closed);
+        assert_eq!(persister.inner.lock().expect("Shouldn't be poisoned").events.len(), 1);
         assert_eq!(
-            persister.inner.read().expect("Shouldn't be poisoned").events.last(),
+            persister.inner.lock().expect("Shouldn't be poisoned").events.last(),
             Some(&SessionEvent::Closed(SessionOutcome::PayjoinProposalSent))
         );
 
@@ -1602,20 +1581,22 @@ pub mod test {
             Ok(ret)
         }
 
-        let maybe_inputs_seen =
-            receiver.check_inputs_not_owned(&mut |_| mock_callback(&mut call_count, false));
+        let maybe_inputs_seen = receiver
+            .check_inputs_not_owned(&mut |_| mock_callback(&mut call_count, false))
+            .save(&persister)
+            .expect("Persister shouldn't fail");
         assert_eq!(call_count, 1);
 
         let outputs_unknown = maybe_inputs_seen
-            .save(&persister)
-            .expect("Persister shouldn't fail")
             .check_no_inputs_seen_before(&mut |_| mock_callback(&mut call_count, false))
             .save(&persister)
             .expect("Persister shouldn't fail");
         assert_eq!(call_count, 2);
 
         let _wants_outputs = outputs_unknown
-            .identify_receiver_outputs(&mut |_| mock_callback(&mut call_count, true));
+            .identify_receiver_outputs(&mut |_| mock_callback(&mut call_count, true))
+            .save(&persister)
+            .expect("Persister shouldn't fail");
         // there are 2 receiver outputs so we should expect this callback to run twice incrementing
         // call count twice
         assert_eq!(call_count, 4);
