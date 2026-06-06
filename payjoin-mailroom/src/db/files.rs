@@ -184,8 +184,7 @@ impl DiskStorage {
     }
 
     /// Read the frame at `index`, where every frame is `frame_size` bytes.
-    // TODO: consumed by the ranged-read HTTP handler.
-    #[allow(dead_code)]
+    #[cfg(test)]
     async fn read_frame(
         &self,
         id: &ShortId,

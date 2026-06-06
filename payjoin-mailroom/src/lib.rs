@@ -230,7 +230,8 @@ async fn init_directory(
 ) -> anyhow::Result<DirectoryService> {
     let files_db =
         crate::db::FilesDb::init(config.timeout, config.storage_dir.clone(), config.mailbox_ttl)
-            .await?;
+            .await?
+            .with_append_mailbox(config.append_mailbox);
     files_db.spawn_background_prune().await;
     let db = crate::db::MetricsDb::new(crate::db::DbServiceAdapter::new(files_db), metrics.clone());
 

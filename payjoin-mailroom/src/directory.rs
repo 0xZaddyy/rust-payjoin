@@ -20,6 +20,12 @@ pub const BHTTP_REQ_BYTES: usize =
     ENCAPSULATED_MESSAGE_BYTES - (CHACHA20_POLY1305_NONCE_LEN + POLY1305_TAG_SIZE);
 const V1_MAX_BUFFER_SIZE: usize = 65536;
 
+/// Fixed size of one append-only mailbox frame, equal to payjoin core's
+/// `PADDED_MESSAGE_BYTES` (the HPKE-padded message length). Append-only
+/// mailboxes store a whole number of these frames; a ranged `?index=N` read
+/// returns frame `N` by slicing the stored blob at this stride.
+const MAILBOX_FRAME_BYTES: usize = 7168;
+
 const V1_REJECT_RES_JSON: &str =
     r#"{{"errorCode": "original-psbt-rejected ", "message": "Body is not a string"}}"#;
 const V1_UNAVAILABLE_RES_JSON: &str = r#"{{"errorCode": "unavailable", "message": "V2 receiver offline. V1 sends require synchronous communications."}}"#;
@@ -256,12 +262,13 @@ impl<D: Db> Service<D> {
         req: Request<Body>,
     ) -> Result<Response<Body>, HandlerError> {
         let path = req.uri().path().to_string();
+        let query = req.uri().query().map(|q| q.to_string());
         let (parts, body) = req.into_parts();
         let path_segments: Vec<&str> = path.split('/').collect();
         debug!("handle_v2: {:?}", &path_segments);
         match (parts.method, path_segments.as_slice()) {
             (Method::POST, &["", id]) => self.post_mailbox(id, body).await,
-            (Method::GET, &["", id]) => self.get_mailbox(id).await,
+            (Method::GET, &["", id]) => self.get_mailbox(id, query.as_deref()).await,
             (Method::PUT, &["", id]) if self.v1.is_some() => self.put_payjoin_v1(id, body).await,
             _ => Ok(not_found()),
         }
@@ -285,10 +292,31 @@ impl<D: Db> Service<D> {
         }
     }
 
-    async fn get_mailbox(&self, id: &str) -> Result<Response<Body>, HandlerError> {
+    async fn get_mailbox(&self, id: &str, query: Option<&str>) -> Result<Response<Body>, HandlerError> {
         trace!("get_mailbox");
         let id = ShortId::from_str(id)?;
         let timeout_response = Response::builder().status(StatusCode::ACCEPTED).body(empty())?;
+
+        // Append-only ranged read: `?index=N` returns the Nth fixed-size frame.
+        // A whole GET response only fits one frame (OHTTP caps it at one
+        // encapsulated message), so readers fetch frames one index at a time.
+        if let Some(index) = query.and_then(parse_index_param) {
+            return match self.db.wait_for_v2_payload(&id).await {
+                Ok(blob) => {
+                    let start = index.saturating_mul(MAILBOX_FRAME_BYTES);
+                    if start >= blob.len() {
+                        // Frame not present yet; signal "try again" like a poll timeout.
+                        return Ok(timeout_response);
+                    }
+                    let end = (start + MAILBOX_FRAME_BYTES).min(blob.len());
+                    Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .body(full(blob[start..end].to_vec()))?)
+                }
+                Err(e) => handle_peek(Err(e), timeout_response),
+            };
+        }
+
         handle_peek(self.db.wait_for_v2_payload(&id).await, timeout_response)
     }
 
@@ -410,6 +438,14 @@ impl<D: Db> Service<D> {
         res.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         Ok(res)
     }
+}
+
+/// Parse `index=<usize>` out of a URL query string, if present.
+fn parse_index_param(query: &str) -> Option<usize> {
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == "index").then(|| value.parse::<usize>().ok())?
+    })
 }
 
 fn handle_peek<E: SendableError>(
@@ -613,6 +649,45 @@ mod tests {
         let (parts, body) = res.into_parts();
         let bytes = body.collect().await.unwrap().to_bytes();
         (parts.status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    /// A `Service` whose v2 mailbox writes append fixed-size frames.
+    async fn append_test_service() -> Service<FilesDb> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = FilesDb::init(Duration::from_millis(100), dir.keep(), Duration::from_secs(3600))
+            .await
+            .expect("db init")
+            .with_append_mailbox(true);
+        let ohttp: ohttp::Server =
+            crate::key_config::gen_ohttp_server_config().expect("ohttp config").into();
+        Service::new(db, ohttp, SentinelTag::new([0u8; 32]), None)
+    }
+
+    #[tokio::test]
+    async fn append_mailbox_reads_each_frame_by_index() {
+        let svc = append_test_service().await;
+        let id = valid_short_id_path();
+
+        // Post three uniform, fixed-size frames to the same mailbox.
+        let frame = |b: u8| vec![b; MAILBOX_FRAME_BYTES];
+        for b in [b'A', b'B', b'C'] {
+            let res = svc.post_mailbox(&id, Body::from(frame(b))).await.expect("post");
+            assert_eq!(res.status(), StatusCode::OK, "each append should be accepted");
+        }
+
+        // `?index=N` returns exactly frame N, in append order.
+        for (idx, b) in [b'A', b'B', b'C'].into_iter().enumerate() {
+            let query = format!("index={idx}");
+            let res = svc.get_mailbox(&id, Some(query.as_str())).await.expect("get");
+            assert_eq!(res.status(), StatusCode::OK, "frame {idx} should be present");
+            let bytes = res.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(bytes.len(), MAILBOX_FRAME_BYTES, "one frame per index");
+            assert!(bytes.iter().all(|&x| x == b), "frame {idx} content mismatch");
+        }
+
+        // Reading past the last frame signals "not yet available" (202).
+        let res = svc.get_mailbox(&id, Some("index=3")).await.expect("get");
+        assert_eq!(res.status(), StatusCode::ACCEPTED, "index past end yields 202");
     }
 
     // V1 routing
