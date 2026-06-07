@@ -657,7 +657,7 @@ mod tests {
         let db = FilesDb::init(Duration::from_millis(100), dir.keep(), Duration::from_secs(3600))
             .await
             .expect("db init")
-            .with_append_mailbox(true);
+            .with_append_mailbox();
         let ohttp: ohttp::Server =
             crate::key_config::gen_ohttp_server_config().expect("ohttp config").into();
         Service::new(db, ohttp, SentinelTag::new([0u8; 32]), None)

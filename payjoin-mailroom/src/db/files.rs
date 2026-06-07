@@ -167,15 +167,12 @@ impl DiskStorage {
         }
     }
 
-    async fn append_frame(&self, id: &ShortId, frame: &[u8]) -> io::Result<Option<SystemTime>> {
+    /// Append one frame to the end of an existing mailbox, in place.
+    /// The caller guarantees the mailbox exists, so a missing file surfaces as
+    /// an I/O error.
+    async fn append_frame(&self, id: &ShortId, frame: &[u8]) -> io::Result<()> {
         let path = self.mailbox_path(id);
-        let meta = match fs::metadata(&path).await {
-            Ok(meta) => meta,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e),
-        };
-        let offset = meta.len() as usize;
-        let created = meta.created()?;
+        let offset = fs::metadata(&path).await?.len() as usize;
 
         let mut buffer = frame.to_vec();
         self.xor_buffer_at(&mut buffer, offset);
@@ -184,7 +181,7 @@ impl DiskStorage {
         file.write_all(&buffer).await?;
         file.sync_data().await?;
 
-        Ok(Some(created))
+        Ok(())
     }
 
     /// Read the frame at `index`. Frames are a uniform [`FRAME_SIZE`] bytes.
@@ -267,9 +264,9 @@ impl FilesDb {
         })
     }
 
-    /// Enable or disable append-only mailbox semantics for v2 writes.
-    pub fn with_append_mailbox(mut self, append_mailbox: bool) -> Self {
-        self.append_mailbox = append_mailbox;
+    /// Enable append-only mailbox semantics for v2 writes (off by default).
+    pub fn with_append_mailbox(mut self) -> Self {
+        self.append_mailbox = true;
         self
     }
 
@@ -442,9 +439,7 @@ impl Mailboxes {
         // more fixed-size frame instead of being rejected. Appends extend an
         // existing entry, so they don't consume a new capacity/prune slot.
         if append && self.persistent_storage.contains_key(id).await? {
-            if self.persistent_storage.append_frame(id, &payload).await?.is_none() {
-                return Ok(None);
-            }
+            self.persistent_storage.append_frame(id, &payload).await?;
         } else {
             let Some(created) = self.persistent_storage.try_insert(id, &payload).await? else {
                 return Ok(None);
@@ -686,8 +681,8 @@ mod tests {
         // try_insert creates the mailbox with the first frame; append_frame
         // concatenates subsequent frames in place.
         storage.try_insert(&id, &frame0).await?.expect("first write should succeed");
-        storage.append_frame(&id, &frame1).await?.expect("append should succeed");
-        storage.append_frame(&id, &frame2).await?.expect("append should succeed");
+        storage.append_frame(&id, &frame1).await?;
+        storage.append_frame(&id, &frame2).await?;
 
         // Each frame is retrievable by index, in order.
         let (_, f0) = storage.read_frame(&id, 0).await?.expect("frame 0 exists");
@@ -721,7 +716,7 @@ mod tests {
             FilesDb::init(Duration::from_secs(10), dir.path().to_owned(), Duration::from_secs(60))
                 .await
                 .unwrap()
-                .with_append_mailbox(true);
+                .with_append_mailbox();
 
         let id = ShortId([2u8; 8]);
 
