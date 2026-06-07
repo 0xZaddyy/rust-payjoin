@@ -11,6 +11,7 @@ use http_body_util::BodyExt;
 use payjoin::directory::{ShortId, ShortIdError, ENCAPSULATED_MESSAGE_BYTES};
 use tracing::{debug, error, trace, warn};
 
+use crate::db::files::FRAME_SIZE;
 use crate::db::{Db, Error as DbError, SendableError};
 use crate::ohttp_relay::SentinelTag;
 
@@ -19,12 +20,6 @@ const POLY1305_TAG_SIZE: usize = 16;
 pub const BHTTP_REQ_BYTES: usize =
     ENCAPSULATED_MESSAGE_BYTES - (CHACHA20_POLY1305_NONCE_LEN + POLY1305_TAG_SIZE);
 const V1_MAX_BUFFER_SIZE: usize = 65536;
-
-/// Fixed size of one append-only mailbox frame, equal to payjoin core's
-/// `PADDED_MESSAGE_BYTES` (the HPKE-padded message length). Append-only
-/// mailboxes store a whole number of these frames; a ranged `?index=N` read
-/// returns frame `N` by slicing the stored blob at this stride.
-const MAILBOX_FRAME_BYTES: usize = 7168;
 
 const V1_REJECT_RES_JSON: &str =
     r#"{{"errorCode": "original-psbt-rejected ", "message": "Body is not a string"}}"#;
@@ -292,7 +287,11 @@ impl<D: Db> Service<D> {
         }
     }
 
-    async fn get_mailbox(&self, id: &str, query: Option<&str>) -> Result<Response<Body>, HandlerError> {
+    async fn get_mailbox(
+        &self,
+        id: &str,
+        query: Option<&str>,
+    ) -> Result<Response<Body>, HandlerError> {
         trace!("get_mailbox");
         let id = ShortId::from_str(id)?;
         let timeout_response = Response::builder().status(StatusCode::ACCEPTED).body(empty())?;
@@ -303,12 +302,12 @@ impl<D: Db> Service<D> {
         if let Some(index) = query.and_then(parse_index_param) {
             return match self.db.wait_for_v2_payload(&id).await {
                 Ok(blob) => {
-                    let start = index.saturating_mul(MAILBOX_FRAME_BYTES);
+                    let start = index.saturating_mul(FRAME_SIZE);
                     if start >= blob.len() {
                         // Frame not present yet; signal "try again" like a poll timeout.
                         return Ok(timeout_response);
                     }
-                    let end = (start + MAILBOX_FRAME_BYTES).min(blob.len());
+                    let end = (start + FRAME_SIZE).min(blob.len());
                     Ok(Response::builder()
                         .status(StatusCode::OK)
                         .body(full(blob[start..end].to_vec()))?)
@@ -622,6 +621,7 @@ mod tests {
     use payjoin::directory::ShortId;
 
     use super::*;
+    use crate::db::files::FRAME_SIZE;
     use crate::db::FilesDb;
     use crate::ohttp_relay::SentinelTag;
 
@@ -669,7 +669,7 @@ mod tests {
         let id = valid_short_id_path();
 
         // Post three uniform, fixed-size frames to the same mailbox.
-        let frame = |b: u8| vec![b; MAILBOX_FRAME_BYTES];
+        let frame = |b: u8| vec![b; FRAME_SIZE];
         for b in [b'A', b'B', b'C'] {
             let res = svc.post_mailbox(&id, Body::from(frame(b))).await.expect("post");
             assert_eq!(res.status(), StatusCode::OK, "each append should be accepted");
@@ -681,7 +681,7 @@ mod tests {
             let res = svc.get_mailbox(&id, Some(query.as_str())).await.expect("get");
             assert_eq!(res.status(), StatusCode::OK, "frame {idx} should be present");
             let bytes = res.into_body().collect().await.unwrap().to_bytes();
-            assert_eq!(bytes.len(), MAILBOX_FRAME_BYTES, "one frame per index");
+            assert_eq!(bytes.len(), FRAME_SIZE, "one frame per index");
             assert!(bytes.iter().all(|&x| x == b), "frame {idx} content mismatch");
         }
 

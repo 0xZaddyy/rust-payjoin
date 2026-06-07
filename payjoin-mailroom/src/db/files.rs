@@ -21,6 +21,10 @@ use crate::db::{Db as DbTrait, Error as DbError};
 /// mailboxes/tx, ~4K txs/block, and ~144 blocks/24h.
 const DEFAULT_CAPACITY: usize = 1 << (1 + 12 + 8);
 
+/// Size in bytes of one v2 mailbox frame.
+/// Every v2 message is HPKE-padded to a uniform length (`PADDED_MESSAGE_BYTES`)
+pub(crate) const FRAME_SIZE: usize = 7168;
+
 #[derive(Debug)]
 struct V2WaitMapEntry {
     receiver: future::Shared<oneshot::Receiver<Arc<Vec<u8>>>>,
@@ -183,20 +187,19 @@ impl DiskStorage {
         Ok(Some(created))
     }
 
-    /// Read the frame at `index`, where every frame is `frame_size` bytes.
+    /// Read the frame at `index`. Frames are a uniform [`FRAME_SIZE`] bytes.
     #[cfg(test)]
     async fn read_frame(
         &self,
         id: &ShortId,
         index: usize,
-        frame_size: usize,
     ) -> io::Result<Option<(SystemTime, Vec<u8>)>> {
         let Some((created, data)) = self.get(id).await? else { return Ok(None) };
-        let start = index * frame_size;
+        let start = index * FRAME_SIZE;
         if start >= data.len() {
             return Ok(None);
         }
-        let end = (start + frame_size).min(data.len());
+        let end = (start + FRAME_SIZE).min(data.len());
         Ok(Some((created, data[start..end].to_vec())))
     }
 
@@ -625,7 +628,7 @@ mod tests {
     use payjoin::directory::ShortId;
     use tokio::fs;
 
-    use crate::db::files::DiskStorage;
+    use crate::db::files::{DiskStorage, FRAME_SIZE};
     use crate::db::{Db as DbTrait, Error as DbError, FilesDb};
 
     #[tokio::test]
@@ -672,41 +675,39 @@ mod tests {
 
     #[tokio::test]
     async fn test_append_fixed_frames() -> std::io::Result<()> {
-        // Frames are a uniform length; appended verbatim, read back by index.
-        const FRAME: usize = 8;
+        // Frames are a uniform FRAME_SIZE; appended verbatim, read back by index.
         let dir = tempfile::tempdir()?;
         let storage = DiskStorage::init(dir.path().to_owned()).await?;
         let id = ShortId([1u8; 8]);
 
-        let frame0 = b"frame_AA";
-        let frame1 = b"frame_BB";
-        let frame2 = b"frame_CC";
+        let frame = |b: u8| vec![b; FRAME_SIZE];
+        let (frame0, frame1, frame2) = (frame(0xA0), frame(0xB1), frame(0xC2));
 
         // try_insert creates the mailbox with the first frame; append_frame
         // concatenates subsequent frames in place.
-        storage.try_insert(&id, frame0).await?.expect("first write should succeed");
-        storage.append_frame(&id, frame1).await?.expect("append should succeed");
-        storage.append_frame(&id, frame2).await?.expect("append should succeed");
+        storage.try_insert(&id, &frame0).await?.expect("first write should succeed");
+        storage.append_frame(&id, &frame1).await?.expect("append should succeed");
+        storage.append_frame(&id, &frame2).await?.expect("append should succeed");
 
         // Each frame is retrievable by index, in order.
-        let (_, f0) = storage.read_frame(&id, 0, FRAME).await?.expect("frame 0 exists");
-        let (_, f1) = storage.read_frame(&id, 1, FRAME).await?.expect("frame 1 exists");
-        let (_, f2) = storage.read_frame(&id, 2, FRAME).await?.expect("frame 2 exists");
-        assert_eq!(&f0[..], frame0);
-        assert_eq!(&f1[..], frame1);
-        assert_eq!(&f2[..], frame2);
+        let (_, f0) = storage.read_frame(&id, 0).await?.expect("frame 0 exists");
+        let (_, f1) = storage.read_frame(&id, 1).await?.expect("frame 1 exists");
+        let (_, f2) = storage.read_frame(&id, 2).await?.expect("frame 2 exists");
+        assert_eq!(f0, frame0);
+        assert_eq!(f1, frame1);
+        assert_eq!(f2, frame2);
 
         // Reading past the last frame yields None (the stream terminator).
-        assert!(storage.read_frame(&id, 3, FRAME).await?.is_none(), "no frame past the end");
+        assert!(storage.read_frame(&id, 3).await?.is_none(), "no frame past the end");
 
         // The whole mailbox is the frames concatenated verbatim, no framing.
         let (_, all) = storage.get(&id).await?.expect("mailbox exists");
-        assert_eq!(all, [&frame0[..], &frame1[..], &frame2[..]].concat());
+        assert_eq!(all, [frame0, frame1, frame2].concat());
 
         // The creation time is preserved across appends (in-place, no rewrite).
-        let (created_after, _) = storage.read_frame(&id, 0, FRAME).await?.expect("frame 0 exists");
-        let (created_first, _) = storage.read_frame(&id, 2, FRAME).await?.expect("frame 2 exists");
-        assert_eq!(created_after, created_first, "creation time stable across appends");
+        let (created_a, _) = storage.read_frame(&id, 0).await?.expect("frame 0 exists");
+        let (created_b, _) = storage.read_frame(&id, 2).await?.expect("frame 2 exists");
+        assert_eq!(created_a, created_b, "creation time stable across appends");
 
         Ok(())
     }
