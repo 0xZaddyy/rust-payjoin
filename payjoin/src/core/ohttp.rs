@@ -18,7 +18,7 @@ pub(crate) fn ohttp_encapsulate(
     method: &str,
     target_resource: &str,
     body: Option<&[u8]>,
-) -> Result<([u8; ENCAPSULATED_MESSAGE_BYTES], ohttp::ClientResponse), OhttpEncapsulationError> {
+) -> Result<(Vec<u8>, ohttp::ClientResponse), OhttpEncapsulationError> {
     use std::fmt::Write;
     let mut ohttp_keys = ohttp_keys.clone();
 
@@ -42,12 +42,12 @@ pub(crate) fn ohttp_encapsulate(
         bhttp_message.write_content(body);
     }
 
-    let mut bhttp_req = [0u8; PADDED_BHTTP_REQ_BYTES];
+    let mut bhttp_req = vec![0u8; PADDED_BHTTP_REQ_BYTES];
     OsRng.fill_bytes(&mut bhttp_req);
     bhttp_message.write_bhttp(bhttp::Mode::KnownLength, &mut bhttp_req.as_mut_slice())?;
     let (encapsulated, ohttp_ctx) = ctx.encapsulate(&bhttp_req)?;
 
-    let mut buffer = [0u8; ENCAPSULATED_MESSAGE_BYTES];
+    let mut buffer = vec![0u8; ENCAPSULATED_MESSAGE_BYTES];
     let len = encapsulated.len().min(ENCAPSULATED_MESSAGE_BYTES);
     buffer[..len].copy_from_slice(&encapsulated[..len]);
     Ok((buffer, ohttp_ctx))
@@ -128,18 +128,19 @@ fn process_ohttp_res(
     res: &[u8],
     ohttp_context: ohttp::ClientResponse,
 ) -> Result<http::Response<Vec<u8>>, DirectoryResponseError> {
-    let response_array: &[u8; crate::directory::ENCAPSULATED_MESSAGE_BYTES] =
-        res.try_into().map_err(|_| DirectoryResponseError::InvalidSize(res.len()))?;
+    if res.len() != crate::directory::ENCAPSULATED_MESSAGE_BYTES {
+        return Err(DirectoryResponseError::InvalidSize(res.len()));
+    }
     tracing::trace!("decapsulating directory response");
-    let res = ohttp_decapsulate(ohttp_context, response_array)
-        .map_err(DirectoryResponseError::OhttpDecapsulation)?;
+    let res =
+        ohttp_decapsulate(ohttp_context, res).map_err(DirectoryResponseError::OhttpDecapsulation)?;
     Ok(res)
 }
 
 /// decapsulate ohttp, bhttp response and return http response body and status code
 pub(crate) fn ohttp_decapsulate(
     res_ctx: ohttp::ClientResponse,
-    ohttp_body: &[u8; ENCAPSULATED_MESSAGE_BYTES],
+    ohttp_body: &[u8],
 ) -> Result<http::Response<Vec<u8>>, OhttpEncapsulationError> {
     let bhttp_body = res_ctx.decapsulate(ohttp_body)?;
     let mut r = std::io::Cursor::new(bhttp_body);

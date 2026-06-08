@@ -1,6 +1,9 @@
 //! Types relevant to the Payjoin Directory as defined in BIP 77.
 
-pub const ENCAPSULATED_MESSAGE_BYTES: usize = 8192;
+/// Fixed size of every OHTTP-encapsulated message, on both requests and
+/// responses.
+/// frames (256 KiB / 7168-byte frames ≈ 36 per response).
+pub const ENCAPSULATED_MESSAGE_BYTES: usize = 256 * 1024;
 
 /// A 64-bit identifier used to identify Payjoin Directory entries.
 ///

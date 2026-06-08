@@ -35,10 +35,7 @@ impl Request {
 
     /// Construct a new v2 request.
     #[cfg(feature = "v2")]
-    pub(crate) fn new_v2(
-        url: &Url,
-        body: &[u8; crate::directory::ENCAPSULATED_MESSAGE_BYTES],
-    ) -> Self {
+    pub(crate) fn new_v2(url: &Url, body: &[u8]) -> Self {
         Self { url: url.to_string(), content_type: V2_REQ_CONTENT_TYPE, body: body.to_vec() }
     }
 }
