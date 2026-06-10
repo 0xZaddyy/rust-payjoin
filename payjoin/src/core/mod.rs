@@ -38,6 +38,9 @@ pub use crate::hpke::{HpkeKeyPair, HpkePublicKey};
 pub(crate) mod ohttp;
 #[cfg(feature = "v2")]
 pub use crate::ohttp::OhttpKeys;
+#[cfg(feature = "v2")]
+#[cfg_attr(docsrs, doc(cfg(feature = "v2")))]
+pub mod append_mailbox;
 
 #[cfg(feature = "io")]
 #[cfg_attr(docsrs, doc(cfg(feature = "io")))]
