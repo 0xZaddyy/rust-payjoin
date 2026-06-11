@@ -1,13 +1,13 @@
 //! Client helpers for append-only Payjoin Directory mailboxes.
 //!
 //! A mailbox is addressed by a [`ShortId`] and holds a sequence of fixed-size
-//! message frames. [`append_request`] adds one frame and [`read_request`] reads
-//! the whole mailbox; the matching `process_*` functions turn the directory's
+//! frames. Each frame is an HPKE ciphertext padded to [`PADDED_MESSAGE_BYTES`];
+//! these helpers move encrypted frames to and from the directory and never see
+//! plaintext.
 //! response bytes into results. The caller supplies the [`ShortId`] and sends
 //! each returned [`Request`] with its own HTTP client.
 
-use crate::directory::ShortId;
-use crate::hpke::PADDED_MESSAGE_BYTES;
+use crate::directory::{ShortId, PADDED_MESSAGE_BYTES};
 use crate::ohttp::{
     ohttp_encapsulate, process_get_res, process_post_res, DirectoryResponseError,
     OhttpEncapsulationError,
@@ -23,7 +23,8 @@ pub struct MailboxCtx(ohttp::ClientResponse);
 /// Build the request that appends one `frame` to `mailbox`.
 ///
 /// Returns the [`Request`] to send and the [`MailboxCtx`] to process the
-/// response with. `frame` must be a single fixed-size mailbox message.
+/// response with. `frame` must be one HPKE ciphertext of [`PADDED_MESSAGE_BYTES`];
+/// the caller encrypts the message before appending it.
 pub fn append_request(
     ohttp_keys: &OhttpKeys,
     directory: &Url,

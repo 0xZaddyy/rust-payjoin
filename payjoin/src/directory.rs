@@ -5,6 +5,9 @@
 /// frames (256 KiB / 7168-byte frames ≈ 36 per response).
 pub const ENCAPSULATED_MESSAGE_BYTES: usize = 256 * 1024;
 
+/// Fixed size, in bytes, of one Payjoin Directory mailbox message frame.
+pub const PADDED_MESSAGE_BYTES: usize = 7168;
+
 /// A 64-bit identifier used to identify Payjoin Directory entries.
 ///
 /// ShortId is derived from a truncated SHA256 hash of a compressed public key. While SHA256 is used

@@ -22,8 +22,10 @@ use crate::db::{Db as DbTrait, Error as DbError};
 const DEFAULT_CAPACITY: usize = 1 << (1 + 12 + 8);
 
 /// Size in bytes of one v2 mailbox frame.
-/// Every v2 message is HPKE-padded to a uniform length (`PADDED_MESSAGE_BYTES`)
-pub(crate) const FRAME_SIZE: usize = 7168;
+///
+/// Every v2 message is an HPKE ciphertext padded to this length, so the frame
+/// size is exactly the directory's `PADDED_MESSAGE_BYTES`.
+pub(crate) const FRAME_SIZE: usize = payjoin::directory::PADDED_MESSAGE_BYTES;
 
 #[derive(Debug)]
 struct V2WaitMapEntry {
