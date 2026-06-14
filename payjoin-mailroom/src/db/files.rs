@@ -21,10 +21,12 @@ use crate::db::{Db as DbTrait, Error as DbError};
 /// mailboxes/tx, ~4K txs/block, and ~144 blocks/24h.
 const DEFAULT_CAPACITY: usize = 1 << (1 + 12 + 8);
 
-/// Size in bytes of one v2 mailbox frame.
+/// Size in bytes of one v2 mailbox frame: the HPKE-padded ciphertext length.
 ///
-/// Every v2 message is an HPKE ciphertext padded to this length, so the frame
-/// size is exactly the directory's `PADDED_MESSAGE_BYTES`.
+/// The directory stores append-only mailboxes as opaque concatenated frames and
+/// doesn't slice them, so this is currently only needed by tests. It stays tied
+/// to the directory's `PADDED_MESSAGE_BYTES` as the single source of truth.
+#[cfg(test)]
 pub(crate) const FRAME_SIZE: usize = payjoin::directory::PADDED_MESSAGE_BYTES;
 
 #[derive(Debug)]

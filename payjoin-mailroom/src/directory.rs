@@ -8,7 +8,7 @@ use axum::body::{Body, Bytes};
 use axum::http::header::{HeaderValue, ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_TYPE};
 use axum::http::{Method, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt;
-use payjoin::directory::{ShortId, ShortIdError, ENCAPSULATED_MESSAGE_BYTES};
+use payjoin::directory::{ShortId, ShortIdError, ENCAPSULATED_RESPONSE_BYTES};
 use tracing::{debug, error, trace, warn};
 
 use crate::db::{Db, Error as DbError, SendableError};
@@ -16,8 +16,11 @@ use crate::ohttp_relay::SentinelTag;
 
 const CHACHA20_POLY1305_NONCE_LEN: usize = 32; // chacha20poly1305 n_k
 const POLY1305_TAG_SIZE: usize = 16;
-pub const BHTTP_REQ_BYTES: usize =
-    ENCAPSULATED_MESSAGE_BYTES - (CHACHA20_POLY1305_NONCE_LEN + POLY1305_TAG_SIZE);
+/// Usable BHTTP payload size of an encapsulated OHTTP response, after the
+/// ChaCha20-Poly1305 nonce and tag. A read response is padded to this length
+/// before encapsulation.
+pub const BHTTP_RES_BYTES: usize =
+    ENCAPSULATED_RESPONSE_BYTES - (CHACHA20_POLY1305_NONCE_LEN + POLY1305_TAG_SIZE);
 const V1_MAX_BUFFER_SIZE: usize = 65536;
 
 const V1_REJECT_RES_JSON: &str =
@@ -243,11 +246,11 @@ impl<D: Db> Service<D> {
         bhttp_res
             .write_bhttp(bhttp::Mode::KnownLength, &mut bhttp_bytes)
             .map_err(|e| HandlerError::InternalServerError(e.into()))?;
-        bhttp_bytes.resize(BHTTP_REQ_BYTES, 0);
+        bhttp_bytes.resize(BHTTP_RES_BYTES, 0);
         let ohttp_res = res_ctx
             .encapsulate(&bhttp_bytes)
             .map_err(|e| HandlerError::InternalServerError(e.into()))?;
-        assert!(ohttp_res.len() == ENCAPSULATED_MESSAGE_BYTES, "Unexpected OHTTP response size");
+        assert!(ohttp_res.len() == ENCAPSULATED_RESPONSE_BYTES, "Unexpected OHTTP response size");
         Ok(Response::new(full(ohttp_res)))
     }
 

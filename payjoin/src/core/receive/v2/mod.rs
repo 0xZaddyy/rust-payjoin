@@ -522,7 +522,10 @@ impl Receiver<Initialized> {
 
     fn fallback_req_body(
         &self,
-    ) -> Result<(Vec<u8>, ohttp::ClientResponse), OhttpEncapsulationError> {
+    ) -> Result<
+        ([u8; crate::directory::ENCAPSULATED_MESSAGE_BYTES], ohttp::ClientResponse),
+        OhttpEncapsulationError,
+    > {
         let fallback_target = mailbox_endpoint(
             &self.session_context.directory,
             &self.session_context.proposal_mailbox_id(),
