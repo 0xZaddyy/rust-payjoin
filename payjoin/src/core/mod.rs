@@ -33,7 +33,7 @@ pub(crate) mod hpke;
 #[cfg(feature = "v2")]
 pub mod persist;
 #[cfg(feature = "v2")]
-pub use crate::hpke::{HpkeKeyPair, HpkePublicKey};
+pub use crate::hpke::{HpkeError, HpkeKeyPair, HpkePublicKey};
 #[cfg(feature = "v2")]
 pub(crate) mod ohttp;
 #[cfg(feature = "v2")]
