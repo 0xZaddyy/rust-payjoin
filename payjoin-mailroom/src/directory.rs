@@ -8,7 +8,10 @@ use axum::body::{Body, Bytes};
 use axum::http::header::{HeaderValue, ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_TYPE};
 use axum::http::{Method, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt;
-use payjoin::directory::{ShortId, ShortIdError, ENCAPSULATED_RESPONSE_BYTES};
+use payjoin::directory::{
+    ShortId, ShortIdError, ENCAPSULATED_RESPONSE_BYTES, MAX_FRAMES_PER_RESPONSE,
+    PADDED_MESSAGE_BYTES,
+};
 use tracing::{debug, error, trace, warn};
 
 use crate::db::{Db, Error as DbError, SendableError};
@@ -246,7 +249,12 @@ impl<D: Db> Service<D> {
         bhttp_res
             .write_bhttp(bhttp::Mode::KnownLength, &mut bhttp_bytes)
             .map_err(|e| HandlerError::InternalServerError(e.into()))?;
-        bhttp_bytes.resize(BHTTP_RES_BYTES, 0);
+        if bhttp_bytes.len() > BHTTP_RES_BYTES {
+            return Err(HandlerError::InternalServerError(anyhow::anyhow!(
+                "BHTTP response exceeds the OHTTP response capacity"
+            )));
+        }
+        bhttp_bytes.extend(std::iter::repeat_n(0, BHTTP_RES_BYTES - bhttp_bytes.len()));
         let ohttp_res = res_ctx
             .encapsulate(&bhttp_bytes)
             .map_err(|e| HandlerError::InternalServerError(e.into()))?;
@@ -259,12 +267,13 @@ impl<D: Db> Service<D> {
         req: Request<Body>,
     ) -> Result<Response<Body>, HandlerError> {
         let path = req.uri().path().to_string();
+        let query = req.uri().query().unwrap_or_default().to_string();
         let (parts, body) = req.into_parts();
         let path_segments: Vec<&str> = path.split('/').collect();
         debug!("handle_v2: {:?}", &path_segments);
         match (parts.method, path_segments.as_slice()) {
             (Method::POST, &["", id]) => self.post_mailbox(id, body).await,
-            (Method::GET, &["", id]) => self.get_mailbox(id).await,
+            (Method::GET, &["", id]) => self.get_mailbox(id, &query).await,
             (Method::PUT, &["", id]) if self.v1.is_some() => self.put_payjoin_v1(id, body).await,
             _ => Ok(not_found()),
         }
@@ -288,12 +297,67 @@ impl<D: Db> Service<D> {
         }
     }
 
-    /// Read the entire mailbox
-    async fn get_mailbox(&self, id: &str) -> Result<Response<Body>, HandlerError> {
+    /// Read one stable, frame-indexed page of an append-only mailbox.
+    async fn get_mailbox(&self, id: &str, query: &str) -> Result<Response<Body>, HandlerError> {
         trace!("get_mailbox");
         let id = ShortId::from_str(id)?;
+        let (start, limit) = parse_page_query(query)?;
         let timeout_response = Response::builder().status(StatusCode::ACCEPTED).body(empty())?;
-        handle_peek(self.db.wait_for_v2_payload(&id).await, timeout_response)
+        let response = handle_peek(self.db.wait_for_v2_payload(&id).await, timeout_response)?;
+        if response.status() != StatusCode::OK {
+            return Ok(response);
+        }
+
+        let (parts, body) = response.into_parts();
+        let payload = body
+            .collect()
+            .await
+            .map_err(|e| HandlerError::InternalServerError(e.into()))?
+            .to_bytes();
+        if payload.len() % PADDED_MESSAGE_BYTES != 0 {
+            return Err(HandlerError::InternalServerError(anyhow::anyhow!(
+                "mailbox contains a partial frame"
+            )));
+        }
+        let total = payload.len() / PADDED_MESSAGE_BYTES;
+        if start > total {
+            return Err(HandlerError::BadRequest(anyhow::anyhow!(
+                "start cursor is beyond the end of the mailbox"
+            )));
+        }
+        let count = limit.min(total - start);
+        let next = start
+            .checked_add(count)
+            .ok_or_else(|| HandlerError::BadRequest(anyhow::anyhow!("mailbox cursor overflow")))?;
+        let end = next == total;
+        let byte_start = start
+            .checked_mul(PADDED_MESSAGE_BYTES)
+            .ok_or_else(|| HandlerError::BadRequest(anyhow::anyhow!("mailbox cursor overflow")))?;
+        let byte_end = next
+            .checked_mul(PADDED_MESSAGE_BYTES)
+            .ok_or_else(|| HandlerError::BadRequest(anyhow::anyhow!("mailbox cursor overflow")))?;
+
+        let mut page = Response::from_parts(parts, full(payload.slice(byte_start..byte_end)));
+        let headers = page.headers_mut();
+        headers.insert(
+            "payjoin-first-frame",
+            HeaderValue::from_str(&start.to_string()).expect("usize is a valid header value"),
+        );
+        headers.insert(
+            "payjoin-frame-count",
+            HeaderValue::from_str(&count.to_string()).expect("usize is a valid header value"),
+        );
+        headers.insert(
+            "payjoin-end-of-mailbox",
+            HeaderValue::from_static(if end { "true" } else { "false" }),
+        );
+        if !end {
+            headers.insert(
+                "payjoin-next-cursor",
+                HeaderValue::from_str(&next.to_string()).expect("usize is a valid header value"),
+            );
+        }
+        Ok(page)
     }
 
     /// Screen a V1 PSBT body against the address blocklist.
@@ -437,6 +501,39 @@ fn handle_peek<E: SendableError>(
             ))),
         },
     }
+}
+
+fn parse_page_query(query: &str) -> Result<(usize, usize), HandlerError> {
+    let mut start = None;
+    let mut limit = None;
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (name, value) = pair
+            .split_once('=')
+            .ok_or_else(|| HandlerError::BadRequest(anyhow::anyhow!("invalid page query")))?;
+        let slot = match name {
+            "start" => &mut start,
+            "limit" => &mut limit,
+            _ =>
+                return Err(HandlerError::BadRequest(anyhow::anyhow!(
+                    "unknown mailbox query parameter"
+                ))),
+        };
+        if slot.is_some() {
+            return Err(HandlerError::BadRequest(anyhow::anyhow!(
+                "duplicate mailbox query parameter"
+            )));
+        }
+        *slot = Some(value.parse::<usize>().map_err(|_| {
+            HandlerError::BadRequest(anyhow::anyhow!("invalid or overflowing mailbox cursor"))
+        })?);
+    }
+    let limit = limit.unwrap_or(MAX_FRAMES_PER_RESPONSE);
+    if limit == 0 || limit > MAX_FRAMES_PER_RESPONSE {
+        return Err(HandlerError::BadRequest(anyhow::anyhow!(
+            "limit must be between 1 and {MAX_FRAMES_PER_RESPONSE}"
+        )));
+    }
+    Ok((start.unwrap_or(0), limit))
 }
 
 fn landing_page_html() -> String {
@@ -633,26 +730,114 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn append_mailbox_read_returns_all_frames() {
+    async fn append_mailbox_reads_are_paginated() {
         let svc = append_test_service().await;
         let id = valid_short_id_path();
 
-        // Post three uniform, fixed-size frames to the same mailbox.
         let frame = |b: u8| vec![b; FRAME_SIZE];
-        for b in [b'A', b'B', b'C'] {
+        for b in 0..=MAX_FRAMES_PER_RESPONSE as u8 {
             let res = svc.post_mailbox(&id, Body::from(frame(b))).await.expect("post");
             assert_eq!(res.status(), StatusCode::OK, "each append should be accepted");
         }
 
-        // A single GET returns every appended frame, concatenated in order.
-        let res = svc.get_mailbox(&id).await.expect("get");
+        let res = svc.get_mailbox(&id, "start=0&limit=1").await.expect("first page");
         assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()["payjoin-first-frame"], "0");
+        assert_eq!(res.headers()["payjoin-frame-count"], "1");
+        assert_eq!(res.headers()["payjoin-next-cursor"], "1");
+        assert_eq!(res.headers()["payjoin-end-of-mailbox"], "false");
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(bytes.len(), 3 * FRAME_SIZE, "all three frames returned in one response");
+        assert_eq!(bytes.as_ref(), frame(0));
 
-        let expected: Vec<u8> =
-            [b'A', b'B', b'C'].into_iter().flat_map(|b| vec![b; FRAME_SIZE]).collect();
-        assert_eq!(bytes.as_ref(), expected.as_slice(), "frames concatenated in append order");
+        let res = svc.get_mailbox(&id, "start=1&limit=16").await.expect("full page");
+        assert_eq!(res.headers()["payjoin-frame-count"], "16");
+        assert_eq!(res.headers()["payjoin-end-of-mailbox"], "true");
+        assert!(res.headers().get("payjoin-next-cursor").is_none());
+        assert_eq!(res.into_body().collect().await.unwrap().to_bytes().len(), 16 * FRAME_SIZE);
+
+        let res = svc.get_mailbox(&id, "start=17&limit=16").await.expect("empty end page");
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()["payjoin-frame-count"], "0");
+        assert_eq!(res.headers()["payjoin-end-of-mailbox"], "true");
+        assert!(res.into_body().collect().await.unwrap().to_bytes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn append_mailbox_cursor_survives_concurrent_appends() {
+        let svc = append_test_service().await;
+        let id = valid_short_id_path();
+        for b in [1, 2] {
+            svc.post_mailbox(&id, Body::from(vec![b; FRAME_SIZE])).await.expect("post");
+        }
+        let first = svc.get_mailbox(&id, "start=0&limit=1").await.expect("first");
+        let first_body = first.into_body().collect().await.unwrap().to_bytes();
+        svc.post_mailbox(&id, Body::from(vec![3; FRAME_SIZE])).await.expect("append");
+        let first_again = svc.get_mailbox(&id, "start=0&limit=1").await.expect("first again");
+        assert_eq!(first_again.into_body().collect().await.unwrap().to_bytes(), first_body);
+        let rest = svc.get_mailbox(&id, "start=1&limit=16").await.expect("rest");
+        assert_eq!(rest.headers()["payjoin-frame-count"], "2");
+    }
+
+    #[tokio::test]
+    async fn append_mailbox_rejects_invalid_cursors() {
+        let svc = append_test_service().await;
+        let id = valid_short_id_path();
+        svc.post_mailbox(&id, Body::from(vec![0; FRAME_SIZE])).await.expect("post");
+        for query in
+            ["start=2", "start=184467440737095516160", "limit=0", "limit=17", "start=0&start=1"]
+        {
+            assert!(matches!(svc.get_mailbox(&id, query).await, Err(HandlerError::BadRequest(_))));
+        }
+    }
+
+    #[tokio::test]
+    async fn append_mailbox_page_metadata_stays_inside_ohttp() {
+        let svc = append_test_service().await;
+        let id = valid_short_id_path();
+        for b in [1, 2] {
+            svc.post_mailbox(&id, Body::from(vec![b; FRAME_SIZE])).await.expect("post");
+        }
+
+        let mut config = svc.ohttp.config().clone();
+        let client = ohttp::ClientRequest::from_config(&mut config).expect("client config");
+        let mut message = bhttp::Message::request(
+            b"GET".to_vec(),
+            b"https".to_vec(),
+            b"directory.example".to_vec(),
+            format!("/{id}?start=1&limit=1").into_bytes(),
+        );
+        message.write_content([]);
+        let mut bhttp_request = Vec::new();
+        message
+            .write_bhttp(bhttp::Mode::KnownLength, &mut bhttp_request)
+            .expect("serialize request");
+        const OHTTP_REQUEST_OVERHEAD: usize = 65 + 16 + 7;
+        bhttp_request
+            .resize(payjoin::directory::ENCAPSULATED_MESSAGE_BYTES - OHTTP_REQUEST_OVERHEAD, 0);
+        let (encapsulated, response_context) =
+            client.encapsulate(&bhttp_request).expect("encapsulate");
+
+        let response =
+            svc.handle_ohttp_gateway(Body::from(encapsulated)).await.expect("gateway response");
+        let ohttp_response = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(ohttp_response.len(), ENCAPSULATED_RESPONSE_BYTES);
+        let bhttp_response = response_context.decapsulate(&ohttp_response).expect("decapsulate");
+        let mut cursor = std::io::Cursor::new(bhttp_response);
+        let response = bhttp::Message::read_bhttp(&mut cursor).expect("parse response");
+
+        let header = |name: &[u8]| {
+            response
+                .header()
+                .fields()
+                .iter()
+                .find(|field| field.name() == name)
+                .map(|field| field.value())
+        };
+        assert_eq!(header(b"payjoin-first-frame"), Some(b"1".as_slice()));
+        assert_eq!(header(b"payjoin-frame-count"), Some(b"1".as_slice()));
+        assert_eq!(header(b"payjoin-end-of-mailbox"), Some(b"true".as_slice()));
+        assert_eq!(header(b"payjoin-next-cursor"), None);
+        assert_eq!(response.content(), vec![2; FRAME_SIZE]);
     }
 
     // V1 routing

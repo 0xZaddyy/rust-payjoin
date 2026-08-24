@@ -2,16 +2,16 @@
 //!
 //! A mailbox is addressed by a [`ShortId`] and holds a sequence of fixed-size
 //! HPKE-encrypted frames. [`append_request`] encrypts a message and builds the
-//! request to append it; [`read_request`] reads the whole mailbox and
-//! [`process_read_response`] decrypts the frames addressed to the reader. The
+//! request to append it; [`read_page_request`] reads a bounded page and
+//! [`process_read_page_response`] decrypts the frames addressed to the reader. The
 //! caller supplies the [`ShortId`] and the HPKE keys, and sends each returned
 //! [`Request`] with its own HTTP client.
 
 use crate::directory::{ShortId, PADDED_MESSAGE_BYTES};
 use crate::hpke::{decrypt_message_a, encrypt_message_a, HpkeError};
 use crate::ohttp::{
-    ohttp_encapsulate, process_get_res, process_post_res, DirectoryResponseError,
-    OhttpEncapsulationError,
+    ohttp_encapsulate, process_get_page_res, process_get_res, process_post_res,
+    DirectoryResponseError, OhttpEncapsulationError,
 };
 use crate::{
     HpkeKeyPair, HpkePublicKey, IntoUrl, IntoUrlError, OhttpKeys, Request, Url, UrlParseError,
@@ -50,7 +50,7 @@ pub fn process_append_response(res: &[u8], ctx: MailboxCtx) -> Result<(), Mailbo
     process_post_res(res, ctx.0).map_err(MailboxError::from)
 }
 
-/// Build the request that reads the entire `mailbox`.
+/// Build a request for the first page of `mailbox` using the server's maximum.
 pub fn read_request(
     ohttp_keys: &OhttpKeys,
     directory: &Url,
@@ -63,12 +63,69 @@ pub fn read_request(
     Ok((request, MailboxCtx(ctx)))
 }
 
+/// Build a request for at most `limit` frames beginning at `start`.
+pub fn read_page_request(
+    ohttp_keys: &OhttpKeys,
+    directory: &Url,
+    ohttp_relay: impl IntoUrl,
+    mailbox: &ShortId,
+    start: usize,
+    limit: usize,
+) -> Result<(Request, MailboxCtx), MailboxError> {
+    let mut target = mailbox_endpoint(directory, mailbox);
+    target
+        .query_pairs_mut()
+        .append_pair("start", &start.to_string())
+        .append_pair("limit", &limit.to_string());
+    let (body, ctx) = ohttp_encapsulate(&ohttp_keys.0, "GET", target.as_str(), None)?;
+    let request = Request::new_v2(&relay_url(ohttp_relay, directory)?, &body);
+    Ok((request, MailboxCtx(ctx)))
+}
+
 /// A mailbox frame decrypted by the reader.
 pub struct DecryptedMessage {
     /// The plaintext message.
     pub plaintext: Vec<u8>,
     /// The sender's reply public key, carried in the frame, to reply to them.
     pub reply_key: HpkePublicKey,
+}
+
+/// One mailbox page and the cursor needed to continue reading it.
+pub struct MailboxPage {
+    /// Index of the first returned frame.
+    pub first: usize,
+    /// Number of frames returned, including frames for other recipients.
+    pub count: usize,
+    /// Cursor for the next request, or `None` at the current mailbox end.
+    pub next: Option<usize>,
+    /// Whether this page reached the current mailbox end.
+    pub end: bool,
+    /// Returned frames that could be decrypted by this reader.
+    pub messages: Vec<DecryptedMessage>,
+}
+
+/// Process a response to [`read_page_request`]. `None` means the mailbox does
+/// not exist yet; an existing end-of-mailbox page has zero frames.
+pub fn process_read_page_response(
+    res: &[u8],
+    ctx: MailboxCtx,
+    receiver_keypair: &HpkeKeyPair,
+) -> Result<Option<MailboxPage>, MailboxError> {
+    let Some(page) = process_get_page_res(res, ctx.0)? else { return Ok(None) };
+    let frames = split_frames(&page.body)?;
+    if frames.len() != page.count {
+        return Err(MailboxError::FrameCountMismatch {
+            metadata: page.count,
+            actual: frames.len(),
+        });
+    }
+    Ok(Some(MailboxPage {
+        first: page.start,
+        count: page.count,
+        next: page.next,
+        end: page.end,
+        messages: decrypt_frames(&frames, receiver_keypair),
+    }))
 }
 
 /// Process the response to a [`read_request`] into the messages addressed to the
@@ -140,6 +197,8 @@ pub enum MailboxError {
     Hpke(HpkeError),
     /// The mailbox payload was not a whole number of frames.
     PartialFrame { len: usize },
+    /// Pagination metadata disagrees with the number of complete body frames.
+    FrameCountMismatch { metadata: usize, actual: usize },
 }
 
 impl From<OhttpEncapsulationError> for MailboxError {
@@ -169,6 +228,8 @@ impl std::fmt::Display for MailboxError {
             Hpke(e) => write!(f, "HPKE error: {e}"),
             PartialFrame { len } =>
                 write!(f, "mailbox payload of {len} bytes is not a whole number of frames"),
+            FrameCountMismatch { metadata, actual } =>
+                write!(f, "mailbox page metadata declares {metadata} frames but contains {actual}"),
         }
     }
 }
@@ -182,7 +243,7 @@ impl std::error::Error for MailboxError {
             ParseUrl(e) => Some(e),
             IntoUrl(e) => Some(e),
             Hpke(e) => Some(e),
-            PartialFrame { .. } => None,
+            PartialFrame { .. } | FrameCountMismatch { .. } => None,
         }
     }
 }

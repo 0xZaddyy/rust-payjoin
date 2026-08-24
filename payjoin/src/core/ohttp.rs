@@ -35,7 +35,10 @@ pub(crate) fn ohttp_encapsulate(
         method.as_bytes().to_vec(),
         url.scheme().as_bytes().to_vec(),
         authority_bytes,
-        url.path().as_bytes().to_vec(),
+        match url.query() {
+            Some(query) => format!("{}?{}", url.path(), query).into_bytes(),
+            None => url.path().as_bytes().to_vec(),
+        },
     );
     // None of our messages include headers, so we don't add them
     if let Some(body) = body {
@@ -58,6 +61,7 @@ pub enum DirectoryResponseError {
     InvalidSize(usize),
     OhttpDecapsulation(OhttpEncapsulationError),
     UnexpectedStatusCode(http::StatusCode),
+    InvalidPaginationMetadata(&'static str),
 }
 
 impl DirectoryResponseError {
@@ -68,6 +72,7 @@ impl DirectoryResponseError {
             OhttpDecapsulation(_) => true,
             InvalidSize(_) => false,
             UnexpectedStatusCode(status_code) => status_code.is_client_error(),
+            InvalidPaginationMetadata(_) => true,
         }
     }
 }
@@ -85,6 +90,7 @@ impl fmt::Display for DirectoryResponseError {
                 crate::directory::ENCAPSULATED_RESPONSE_BYTES
             ),
             UnexpectedStatusCode(status) => write!(f, "Unexpected status code: {status}"),
+            InvalidPaginationMetadata(name) => write!(f, "Invalid pagination metadata: {name}"),
         }
     }
 }
@@ -97,6 +103,7 @@ impl error::Error for DirectoryResponseError {
             OhttpDecapsulation(e) => Some(e),
             InvalidSize(_) => None,
             UnexpectedStatusCode(_) => None,
+            InvalidPaginationMetadata(_) => None,
         }
     }
 }
@@ -108,6 +115,60 @@ pub(crate) fn process_get_res(
     let response = process_ohttp_res(res, ohttp_context)?;
     match response.status() {
         http::StatusCode::OK => Ok(Some(response.body().to_vec())),
+        http::StatusCode::ACCEPTED => Ok(None),
+        status_code => Err(DirectoryResponseError::UnexpectedStatusCode(status_code)),
+    }
+}
+
+pub(crate) struct GetPageResponse {
+    pub body: Vec<u8>,
+    pub start: usize,
+    pub count: usize,
+    pub next: Option<usize>,
+    pub end: bool,
+}
+
+pub(crate) fn process_get_page_res(
+    res: &[u8],
+    ohttp_context: ohttp::ClientResponse,
+) -> Result<Option<GetPageResponse>, DirectoryResponseError> {
+    let response = process_ohttp_res(res, ohttp_context)?;
+    match response.status() {
+        http::StatusCode::OK => {
+            let parse = |name: &'static str| -> Result<usize, DirectoryResponseError> {
+                response
+                    .headers()
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse().ok())
+                    .ok_or(DirectoryResponseError::InvalidPaginationMetadata(name))
+            };
+            let start = parse("payjoin-first-frame")?;
+            let count = parse("payjoin-frame-count")?;
+            let end = match response
+                .headers()
+                .get("payjoin-end-of-mailbox")
+                .and_then(|v| v.to_str().ok())
+            {
+                Some("true") => true,
+                Some("false") => false,
+                _ =>
+                    return Err(DirectoryResponseError::InvalidPaginationMetadata(
+                        "payjoin-end-of-mailbox",
+                    )),
+            };
+            let next = response
+                .headers()
+                .get("payjoin-next-cursor")
+                .map(|_| parse("payjoin-next-cursor"))
+                .transpose()?;
+            if end == next.is_some() {
+                return Err(DirectoryResponseError::InvalidPaginationMetadata(
+                    "payjoin-next-cursor",
+                ));
+           }
+            Ok(Some(GetPageResponse { body: response.body().to_vec(), start, count, next, end }))
+        }
         http::StatusCode::ACCEPTED => Ok(None),
         status_code => Err(DirectoryResponseError::UnexpectedStatusCode(status_code)),
     }
