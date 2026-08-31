@@ -166,7 +166,7 @@ pub(crate) fn process_get_page_res(
                 return Err(DirectoryResponseError::InvalidPaginationMetadata(
                     "payjoin-next-cursor",
                 ));
-           }
+            }
             Ok(Some(GetPageResponse { body: response.body().to_vec(), start, count, next, end }))
         }
         http::StatusCode::ACCEPTED => Ok(None),

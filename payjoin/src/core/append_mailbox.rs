@@ -7,11 +7,11 @@
 //! caller supplies the [`ShortId`] and the HPKE keys, and sends each returned
 //! [`Request`] with its own HTTP client.
 
-use crate::directory::{ShortId, PADDED_MESSAGE_BYTES};
+use crate::directory::{ShortId, MAX_FRAMES_PER_RESPONSE, PADDED_MESSAGE_BYTES};
 use crate::hpke::{decrypt_message_a, encrypt_message_a, HpkeError};
 use crate::ohttp::{
     ohttp_encapsulate, process_get_page_res, process_get_res, process_post_res,
-    DirectoryResponseError, OhttpEncapsulationError,
+    DirectoryResponseError, GetPageResponse, OhttpEncapsulationError,
 };
 use crate::{
     HpkeKeyPair, HpkePublicKey, IntoUrl, IntoUrlError, OhttpKeys, Request, Url, UrlParseError,
@@ -22,6 +22,16 @@ use crate::{
 /// Hold it between sending a [`Request`] and processing the response; it is
 /// consumed when the response is processed.
 pub struct MailboxCtx(ohttp::ClientResponse);
+
+/// State needed to validate and process a paginated mailbox response.
+///
+/// Hold it between sending the request returned by [`read_page_request`] and
+/// passing its response to [`process_read_page_response`].
+pub struct MailboxPageCtx {
+    ohttp: ohttp::ClientResponse,
+    requested_start: usize,
+    requested_limit: usize,
+}
 
 /// Build the request that encrypts `message` and appends it to `mailbox`.
 ///
@@ -71,7 +81,7 @@ pub fn read_page_request(
     mailbox: &ShortId,
     start: usize,
     limit: usize,
-) -> Result<(Request, MailboxCtx), MailboxError> {
+) -> Result<(Request, MailboxPageCtx), MailboxError> {
     let mut target = mailbox_endpoint(directory, mailbox);
     target
         .query_pairs_mut()
@@ -79,7 +89,7 @@ pub fn read_page_request(
         .append_pair("limit", &limit.to_string());
     let (body, ctx) = ohttp_encapsulate(&ohttp_keys.0, "GET", target.as_str(), None)?;
     let request = Request::new_v2(&relay_url(ohttp_relay, directory)?, &body);
-    Ok((request, MailboxCtx(ctx)))
+    Ok((request, MailboxPageCtx { ohttp: ctx, requested_start: start, requested_limit: limit }))
 }
 
 /// A mailbox frame decrypted by the reader.
@@ -108,10 +118,11 @@ pub struct MailboxPage {
 /// not exist yet; an existing end-of-mailbox page has zero frames.
 pub fn process_read_page_response(
     res: &[u8],
-    ctx: MailboxCtx,
+    ctx: MailboxPageCtx,
     receiver_keypair: &HpkeKeyPair,
 ) -> Result<Option<MailboxPage>, MailboxError> {
-    let Some(page) = process_get_page_res(res, ctx.0)? else { return Ok(None) };
+    let Some(page) = process_get_page_res(res, ctx.ohttp)? else { return Ok(None) };
+    validate_page_metadata(&page, ctx.requested_start, ctx.requested_limit)?;
     let frames = split_frames(&page.body)?;
     if frames.len() != page.count {
         return Err(MailboxError::FrameCountMismatch {
@@ -126,6 +137,39 @@ pub fn process_read_page_response(
         end: page.end,
         messages: decrypt_frames(&frames, receiver_keypair),
     }))
+}
+
+fn validate_page_metadata(
+    page: &GetPageResponse,
+    requested_start: usize,
+    requested_limit: usize,
+) -> Result<(), MailboxError> {
+    if page.start != requested_start {
+        return Err(MailboxError::InvalidPaginationMetadata(
+            "first frame does not match the requested start",
+        ));
+    }
+    if page.count > requested_limit {
+        return Err(MailboxError::InvalidPaginationMetadata(
+            "frame count exceeds the requested limit",
+        ));
+    }
+    if page.count > MAX_FRAMES_PER_RESPONSE {
+        return Err(MailboxError::InvalidPaginationMetadata(
+            "frame count exceeds the protocol maximum",
+        ));
+    }
+    let expected_next = page
+        .start
+        .checked_add(page.count)
+        .ok_or(MailboxError::InvalidPaginationMetadata("next cursor overflows the frame index"))?;
+    let expected_next = if page.end { None } else { Some(expected_next) };
+    if page.next != expected_next {
+        return Err(MailboxError::InvalidPaginationMetadata(
+            "next cursor is inconsistent with the page bounds",
+        ));
+    }
+    Ok(())
 }
 
 /// Process the response to a [`read_request`] into the messages addressed to the
@@ -199,6 +243,8 @@ pub enum MailboxError {
     PartialFrame { len: usize },
     /// Pagination metadata disagrees with the number of complete body frames.
     FrameCountMismatch { metadata: usize, actual: usize },
+    /// Pagination metadata is inconsistent with the corresponding request.
+    InvalidPaginationMetadata(&'static str),
 }
 
 impl From<OhttpEncapsulationError> for MailboxError {
@@ -230,6 +276,8 @@ impl std::fmt::Display for MailboxError {
                 write!(f, "mailbox payload of {len} bytes is not a whole number of frames"),
             FrameCountMismatch { metadata, actual } =>
                 write!(f, "mailbox page metadata declares {metadata} frames but contains {actual}"),
+            InvalidPaginationMetadata(reason) =>
+                write!(f, "invalid mailbox pagination metadata: {reason}"),
         }
     }
 }
@@ -243,7 +291,7 @@ impl std::error::Error for MailboxError {
             ParseUrl(e) => Some(e),
             IntoUrl(e) => Some(e),
             Hpke(e) => Some(e),
-            PartialFrame { .. } | FrameCountMismatch { .. } => None,
+            PartialFrame { .. } | FrameCountMismatch { .. } | InvalidPaginationMetadata(_) => None,
         }
     }
 }
@@ -271,6 +319,53 @@ mod tests {
             split_frames(&[0u8; PADDED_MESSAGE_BYTES + 1]),
             Err(MailboxError::PartialFrame { len }) if len == PADDED_MESSAGE_BYTES + 1
         ));
+    }
+
+    fn page(start: usize, count: usize, next: Option<usize>, end: bool) -> GetPageResponse {
+        GetPageResponse { body: Vec::new(), start, count, next, end }
+    }
+
+    #[test]
+    fn page_metadata_matches_request() {
+        assert!(validate_page_metadata(&page(4, 2, Some(6), false), 4, 3).is_ok());
+        assert!(validate_page_metadata(&page(4, 2, None, true), 4, 3).is_ok());
+    }
+
+    #[test]
+    fn page_metadata_rejects_mismatched_request_bounds() {
+        for metadata in [page(3, 1, Some(4), false), page(4, 3, Some(7), false)] {
+            assert!(matches!(
+                validate_page_metadata(&metadata, 4, 2),
+                Err(MailboxError::InvalidPaginationMetadata(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn page_metadata_rejects_protocol_limit_and_cursor_overflow() {
+        let too_many = page(0, MAX_FRAMES_PER_RESPONSE + 1, None, true);
+        assert!(matches!(
+            validate_page_metadata(&too_many, 0, MAX_FRAMES_PER_RESPONSE + 1),
+            Err(MailboxError::InvalidPaginationMetadata(_))
+        ));
+
+        let overflow = page(usize::MAX, 1, None, true);
+        assert!(matches!(
+            validate_page_metadata(&overflow, usize::MAX, 1),
+            Err(MailboxError::InvalidPaginationMetadata(_))
+        ));
+    }
+
+    #[test]
+    fn page_metadata_rejects_inconsistent_next_cursor() {
+        for metadata in
+            [page(4, 2, Some(7), false), page(4, 2, None, false), page(4, 2, Some(6), true)]
+        {
+            assert!(matches!(
+                validate_page_metadata(&metadata, 4, 2),
+                Err(MailboxError::InvalidPaginationMetadata(_))
+            ));
+        }
     }
 
     #[test]
